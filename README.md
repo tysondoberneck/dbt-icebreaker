@@ -111,6 +111,86 @@ Icebreaker connects directly to your Iceberg catalog. No data movement, no dupli
 
 ---
 
+## How Routing Works
+
+Icebreaker uses a **7-gate priority system** to decide whether each model runs locally (free) or in the cloud. No configuration needed — it analyzes your SQL automatically.
+
+### Routing Priority
+
+| Gate | Check | Routes to CLOUD if... |
+|------|-------|----------------------|
+| 1 | **User Override** | You set `icebreaker_route: 'cloud'` in model config |
+| 2 | **Failure History** | Model previously failed locally (OOM, etc.) |
+| 3 | **External Sources** | SQL references `@stage`, `s3://`, cross-database refs |
+| 4 | **Cloud Functions** | SQL uses `CORTEX`, `snowflake.ml`, geo functions |
+| 5 | **Dependencies** | Upstream model was routed to cloud |
+| 6 | **Data Volume** | Estimated input size > 5GB (configurable) |
+| 7 | **Historical Cost** | Used for predictive optimization |
+
+**If all gates pass → routes to LOCAL (free compute)**
+
+### What Gets Detected
+
+**Cloud-only SQL patterns:**
+```sql
+-- These auto-route to CLOUD:
+SELECT cortex.complete('llama3', 'Summarize: ' || text) FROM ...
+SELECT * FROM @my_stage/file.csv
+SELECT * FROM other_database.schema.table  -- cross-database
+COPY INTO my_table FROM @stage
+```
+
+**Local-safe SQL patterns:**
+```sql
+-- These run locally for FREE:
+SELECT * FROM {{ ref('stg_orders') }}
+SELECT * FROM iceberg_catalog.my_schema.my_table  -- Iceberg!
+SELECT *, data:nested.field::string FROM ...  -- Semi-structured
+```
+
+### Volume Estimation
+
+Icebreaker queries `INFORMATION_SCHEMA.TABLES` to estimate input data volume:
+
+```python
+# If combined input tables > 5GB, route to cloud
+volume_gb = sum(upstream_table.bytes for table in dependencies)
+if volume_gb > max_local_gb:
+    return CLOUD
+```
+
+### Historical Cost Prediction (Optional)
+
+If you grant Icebreaker access to `snowflake.account_usage.query_history`, it uses historical execution patterns:
+
+```sql
+-- Requires ACCOUNTADMIN or explicit grant
+GRANT IMPORTED PRIVILEGES ON DATABASE snowflake TO ROLE my_role;
+```
+
+This enables smarter routing based on actual query costs, not just estimates.
+
+### Debug Routing Decisions
+
+```bash
+# See why a model routes where it does
+icebreaker explain models/my_model.sql
+```
+
+Output:
+```
+Model: my_model
+Decision: 🏠 LOCAL: Automatic routing (free compute)
+
+Analysis:
+  External sources: ✓ None detected
+  Cloud functions: ✓ None detected
+  Iceberg sources: ✓ iceberg_catalog.analytics.events
+  Estimated volume: 1.2GB (under 5GB limit)
+```
+
+---
+
 ## Validation & Proof Points
 
 ### Architecture Validation
