@@ -1,0 +1,7 @@
+name: dbt_icebreaker
+version: '1.0.0'
+config-version: 2
+
+profile: 'icebreaker'
+
+# This file is for internal dbt operations, not the end user's project
