@@ -184,6 +184,137 @@ def estimate_query_cost(
     }
 
 
+# =============================================================================
+# Query History Integration (Predictive Routing)
+# =============================================================================
+
+@dataclass
+class QueryStats:
+    """Historical query execution statistics."""
+    table_name: str
+    avg_bytes_scanned: int
+    avg_execution_ms: int
+    avg_credits_used: float
+    query_count: int
+    last_queried: Optional[str] = None
+    
+    @property
+    def avg_cost_usd(self) -> float:
+        """Estimate USD cost (Snowflake: ~$2-4 per credit)."""
+        return self.avg_credits_used * 3.0  # Mid-range estimate
+
+
+def read_snowflake_query_history(
+    snowflake_conn: Any,
+    hours: int = 168,  # 7 days default
+    database: str = None,
+) -> Dict[str, QueryStats]:
+    """
+    Read query execution history from Snowflake ACCOUNT_USAGE.
+    
+    Uses QUERY_HISTORY to understand historical cost patterns
+    for smarter routing decisions.
+    
+    Args:
+        snowflake_conn: Snowflake connection
+        hours: How many hours of history to read (default 7 days)
+        database: Filter to specific database (optional)
+    
+    Returns:
+        Dict mapping table_name -> QueryStats
+    
+    Note: Requires ACCOUNTADMIN or appropriate grants on ACCOUNT_USAGE.
+    """
+    cursor = snowflake_conn.cursor()
+    
+    # Parse table references from query text and aggregate stats
+    query = f"""
+        WITH parsed_queries AS (
+            SELECT 
+                query_text,
+                bytes_scanned,
+                total_elapsed_time,
+                credits_used_cloud_services,
+                start_time,
+                -- Extract table names from common patterns
+                REGEXP_SUBSTR(UPPER(query_text), 'FROM\\\\s+([A-Z0-9_\\\\.]+)', 1, 1, 'e') as table_ref
+            FROM snowflake.account_usage.query_history
+            WHERE start_time > DATEADD(hours, -{hours}, CURRENT_TIMESTAMP())
+              AND query_type IN ('SELECT', 'INSERT', 'CREATE_TABLE_AS_SELECT')
+              AND bytes_scanned > 0
+              {"AND database_name = '" + database + "'" if database else ""}
+        )
+        SELECT 
+            table_ref,
+            AVG(bytes_scanned)::INTEGER as avg_bytes,
+            AVG(total_elapsed_time)::INTEGER as avg_ms,
+            AVG(COALESCE(credits_used_cloud_services, 0)) as avg_credits,
+            COUNT(*) as query_count,
+            MAX(start_time)::VARCHAR as last_queried
+        FROM parsed_queries
+        WHERE table_ref IS NOT NULL
+        GROUP BY table_ref
+        HAVING COUNT(*) >= 2  -- Only tables queried multiple times
+        ORDER BY avg_bytes DESC
+    """
+    
+    try:
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        stats = {}
+        for row in results:
+            table_name = row[0]
+            stats[table_name] = QueryStats(
+                table_name=table_name,
+                avg_bytes_scanned=row[1] or 0,
+                avg_execution_ms=row[2] or 0,
+                avg_credits_used=row[3] or 0.0,
+                query_count=row[4] or 0,
+                last_queried=row[5],
+            )
+        
+        return stats
+        
+    except Exception as e:
+        # ACCOUNT_USAGE requires specific privileges
+        print(f"⚠️ Query history access failed: {e}")
+        print("   (Requires ACCOUNTADMIN or SNOWFLAKE.ACCOUNT_USAGE grants)")
+        return {}
+        
+    finally:
+        cursor.close()
+
+
+def get_table_historical_cost(
+    query_stats: Dict[str, QueryStats],
+    table_name: str,
+) -> Optional[float]:
+    """
+    Get historical average cost for querying a table.
+    
+    Args:
+        query_stats: Dict from read_snowflake_query_history
+        table_name: Table name to look up (case-insensitive)
+    
+    Returns:
+        Average cost in USD, or None if no history
+    """
+    # Normalize table name for lookup
+    table_upper = table_name.upper()
+    
+    # Try exact match first
+    if table_upper in query_stats:
+        return query_stats[table_upper].avg_cost_usd
+    
+    # Try partial match (just table name without schema)
+    for key, stats in query_stats.items():
+        if key.endswith(f".{table_upper}") or key == table_upper:
+            return stats.avg_cost_usd
+    
+    return None
+
+
 # Future: Add BigQuery, Databricks, Redshift metadata readers
 def read_bigquery_catalog(bq_client: Any, project: str = None) -> List[TableMetadata]:
     """Read table metadata from BigQuery. (Placeholder)"""

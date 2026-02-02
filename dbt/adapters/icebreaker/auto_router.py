@@ -28,11 +28,13 @@ class RoutingReason(Enum):
     MEMORY_CONSTRAINT = "Estimated memory exceeds available"
     USER_OVERRIDE = "User configured icebreaker_route"
     PREVIOUS_FAILURE = "Previously failed on local execution"
+    HISTORICAL_COST = "Historical query cost exceeds threshold"
     
     # Local routing reasons
     AUTO_LOCAL = "Automatic routing (free compute)"
     USER_OVERRIDE_LOCAL = "User configured icebreaker_route='local'"
     ICEBERG_LOCAL = "Iceberg catalog source (DuckDB-native)"
+    HISTORICAL_CHEAP = "Historical query cost is negligible"
 
 
 @dataclass
@@ -143,10 +145,14 @@ class AutoRouter:
         max_local_gb: float = 5.0,
         catalog_scanner: Optional[Any] = None,
         routing_history: Optional[Dict] = None,
+        query_stats: Optional[Dict] = None,
+        cost_threshold_usd: float = 0.10,  # Route to local if query costs < $0.10
     ):
         self.max_local_gb = max_local_gb
         self.catalog = catalog_scanner
         self.history = routing_history or {}
+        self.query_stats = query_stats or {}  # Historical query costs
+        self.cost_threshold = cost_threshold_usd
         
         # Pre-compile regex patterns for performance
         self._external_patterns = [
@@ -247,6 +253,17 @@ class AutoRouter:
                     venue="CLOUD",
                     reason=RoutingReason.VOLUME_EXCEEDS_LIMIT,
                     details=f"{volume_gb:.1f}GB > {self.max_local_gb}GB limit",
+                )
+        
+        # 7. Check historical query cost (predictive routing)
+        historical_cost = self._check_historical_cost(model_name)
+        if historical_cost is not None:
+            if historical_cost < self.cost_threshold:
+                return RoutingDecision(
+                    venue="LOCAL",
+                    reason=RoutingReason.HISTORICAL_CHEAP,
+                    details=f"Historical cost ${historical_cost:.3f} < ${self.cost_threshold:.2f}",
+                    confidence=0.85,
                 )
         
         # All checks passed - run locally!
@@ -362,6 +379,30 @@ class AutoRouter:
         if model_name in self.history:
             return self.history[model_name].get("local_failures", 0) > 0
         return False
+    
+    def _check_historical_cost(self, model_name: str) -> Optional[float]:
+        """
+        Check historical query cost for a model from query_stats.
+        
+        Returns estimated USD cost if available, None otherwise.
+        """
+        if not self.query_stats:
+            return None
+        
+        # Normalize model name for lookup
+        model_upper = model_name.upper()
+        
+        # Try exact match first
+        if model_upper in self.query_stats:
+            stats = self.query_stats[model_upper]
+            return getattr(stats, 'avg_cost_usd', stats.get('avg_cost_usd', 0.0))
+        
+        # Try partial match (table name might be in different schema)
+        for key, stats in self.query_stats.items():
+            if key.endswith(f".{model_upper}") or key == model_upper:
+                return getattr(stats, 'avg_cost_usd', stats.get('avg_cost_usd', 0.0))
+        
+        return None
     
     def explain(self, sql: str, model: Dict[str, Any]) -> str:
         """
