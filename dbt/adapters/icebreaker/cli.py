@@ -36,6 +36,10 @@ def main():
         "--month", action="store_true",
         help="Show this month's savings"
     )
+    savings_parser.add_argument(
+        "--dashboard", action="store_true",
+        help="Show enhanced savings dashboard with trends"
+    )
     
     # status command
     status_parser = subparsers.add_parser(
@@ -124,6 +128,44 @@ def main():
         help="Verify syncs from last N hours (default: 24)"
     )
     
+    # cache command - manage local source cache
+    cache_parser = subparsers.add_parser(
+        "cache",
+        help="Manage local source cache (for Snowflake-only users)"
+    )
+    cache_subparsers = cache_parser.add_subparsers(dest="cache_action", help="Cache actions")
+    
+    cache_status_parser = cache_subparsers.add_parser(
+        "status",
+        help="Show cache status and contents"
+    )
+    
+    cache_refresh_parser = cache_subparsers.add_parser(
+        "refresh",
+        help="Refresh all cached tables from Snowflake"
+    )
+    cache_refresh_parser.add_argument(
+        "--force", action="store_true",
+        help="Force refresh even if cache is fresh"
+    )
+    
+    cache_clear_parser = cache_subparsers.add_parser(
+        "clear",
+        help="Clear all cached data"
+    )
+    
+    # summary command - show last run summary
+    summary_parser = subparsers.add_parser(
+        "summary",
+        help="Show summary of last dbt run"
+    )
+    
+    # health command - run health checks
+    health_parser = subparsers.add_parser(
+        "health",
+        help="Run health checks and show status"
+    )
+    
     args = parser.parse_args()
     
     if args.command == "savings":
@@ -146,6 +188,12 @@ def main():
         cmd_version()
     elif args.command == "help":
         cmd_help()
+    elif args.command == "cache":
+        cmd_cache(args)
+    elif args.command == "summary":
+        cmd_summary()
+    elif args.command == "health":
+        cmd_health()
     else:
         parser.print_help()
 
@@ -154,13 +202,17 @@ def cmd_savings(args):
     """Show cost savings report."""
     from dbt.adapters.icebreaker.savings import print_savings
     
-    period = "all"
-    if args.today:
+    # Check for dashboard flag first
+    if hasattr(args, 'dashboard') and args.dashboard:
+        period = "dashboard"
+    elif args.today:
         period = "today"
     elif args.week:
         period = "week"
     elif args.month:
         period = "month"
+    else:
+        period = "all"
     
     print_savings(period)
 
@@ -184,6 +236,19 @@ def cmd_status():
     print(f"  🟢 DuckDB:     Always active (local, FREE)")
     print(f"  {'🟢' if snowflake else '⚪'} Snowflake:  {'Connected' if snowflake else 'Not configured'}")
     print()
+    
+    # Show quick health summary
+    try:
+        from dbt.adapters.icebreaker.health_check import run_health_check
+        print(run_health_check())
+    except Exception as e:
+        print(f"  Health check unavailable: {e}")
+
+
+def cmd_health():
+    """Run health checks."""
+    from dbt.adapters.icebreaker.health_check import run_health_check
+    print(run_health_check())
     
     # Show savings db location
     from dbt.adapters.icebreaker.savings import get_db_path
@@ -673,6 +738,134 @@ def cmd_help():
     print()
     print("═" * 60)
     print()
+
+
+def cmd_summary():
+    """Show summary of last dbt run."""
+    from dbt.adapters.icebreaker.run_summary import get_run_summary
+    
+    print()
+    summary = get_run_summary()
+    last_session = summary.get_last_session()
+    
+    if not last_session:
+        print("📊 No run sessions found yet.")
+        print("   Run 'dbt run' to generate a summary.")
+        print()
+        return
+    
+    # Reconstruct the session for display
+    print("═" * 60)
+    print("🧊 ICEBREAKER RUN SUMMARY")
+    print("═" * 60)
+    print()
+    
+    models = last_session.get("models", [])
+    local_count = sum(1 for m in models if m.get("venue") == "LOCAL")
+    cloud_count = sum(1 for m in models if m.get("venue") == "CLOUD")
+    success_count = sum(1 for m in models if m.get("success", True))
+    error_count = len(models) - success_count
+    total_savings = sum(m.get("estimated_cloud_cost", 0) for m in models if m.get("venue") == "LOCAL")
+    total_duration = sum(m.get("duration_seconds", 0) for m in models)
+    
+    local_pct = (local_count / max(len(models), 1)) * 100
+    
+    print(f"📅 Session: {last_session.get('session_id')}")
+    print(f"   Started: {last_session.get('started_at', 'unknown')[:19]}")
+    print()
+    print(f"📊 Models: {len(models)} total")
+    print(f"   🏠 Local (FREE):  {local_count} ({local_pct:.0f}%)")
+    print(f"   ☁️  Cloud:         {cloud_count}")
+    print(f"   ✅ Succeeded:     {success_count}")
+    if error_count > 0:
+        print(f"   ❌ Failed:        {error_count}")
+    print()
+    print(f"💰 Estimated Savings: ${total_savings:.2f}")
+    print(f"⏱️  Total Duration:    {total_duration:.1f}s")
+    print()
+    
+    # Routing breakdown
+    reason_counts = {}
+    for m in models:
+        reason = m.get("reason", "UNKNOWN")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    
+    if reason_counts:
+        print("📍 Routing Breakdown:")
+        for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1]):
+            icon = "🏠" if "LOCAL" in reason or "AUTO" in reason or "CHEAP" in reason else "☁️"
+            print(f"   {icon} {reason}: {count}")
+        print()
+    
+    # Show errors if any
+    errors = [m for m in models if not m.get("success", True)]
+    if errors:
+        print("❌ Errors:")
+        for m in errors[:5]:
+            print(f"   • {m.get('name')}: {m.get('error', 'Unknown error')}")
+        if len(errors) > 5:
+            print(f"   ... and {len(errors) - 5} more")
+        print()
+    
+    print("═" * 60)
+    print()
+
+
+def cmd_cache(args):
+    """Manage local source cache."""
+    from dbt.adapters.icebreaker.source_cache import get_source_cache, format_cache_status
+    
+    cache = get_source_cache()
+    
+    if args.cache_action == "status":
+        status = cache.get_status()
+        print()
+        print(format_cache_status(status))
+        print()
+    
+    elif args.cache_action == "refresh":
+        print()
+        print("🔄 Refreshing source cache...")
+        print()
+        
+        # Need Snowflake connection to refresh
+        import os
+        if not os.environ.get("SNOWFLAKE_ACCOUNT"):
+            print("❌ Snowflake not configured. Set SNOWFLAKE_ACCOUNT environment variable.")
+            print()
+            return
+        
+        try:
+            import snowflake.connector
+            sf_conn = snowflake.connector.connect(
+                account=os.environ.get("SNOWFLAKE_ACCOUNT"),
+                user=os.environ.get("SNOWFLAKE_USER"),
+                password=os.environ.get("SNOWFLAKE_PASSWORD"),
+                database=os.environ.get("SNOWFLAKE_DATABASE", "DEV"),
+                warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+            )
+            cache.snowflake_conn = sf_conn
+            cache.refresh_all(force=getattr(args, 'force', False))
+            sf_conn.close()
+            print()
+            print("✅ Cache refreshed!")
+        except Exception as e:
+            print(f"❌ Refresh failed: {e}")
+        print()
+    
+    elif args.cache_action == "clear":
+        print()
+        cache.clear()
+        print()
+    
+    else:
+        # No subcommand - show status by default
+        status = cache.get_status()
+        print()
+        print(format_cache_status(status))
+        print()
+        print("Use 'icebreaker cache --help' for available commands.")
+        print()
 
 
 if __name__ == "__main__":

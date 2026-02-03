@@ -93,7 +93,213 @@ class Transpiler:
         # Transform JSON extraction
         statement = self._transform_json(statement)
         
+        # Transform Snowflake-specific functions
+        statement = self._transform_snowflake_functions(statement)
+        
         return statement
+    
+    def _transform_snowflake_functions(self, statement: exp.Expression) -> exp.Expression:
+        """
+        Transform Snowflake-specific functions to DuckDB equivalents.
+        
+        Handles:
+        - LISTAGG → STRING_AGG
+        - IFF → IF / CASE
+        - NVL → COALESCE
+        - NVL2 → CASE WHEN
+        - TRY_* → TRY_CAST / error handling
+        - OBJECT_CONSTRUCT → struct
+        - PARSE_JSON → json()
+        - ARRAY_CONSTRUCT → list
+        - TO_VARIANT → cast to JSON
+        """
+        for func in list(statement.find_all(exp.Func)):
+            func_name = func.sql_name().upper()
+            
+            # LISTAGG → STRING_AGG
+            if func_name == "LISTAGG":
+                self._transform_listagg(func)
+            
+            # IFF → IF (works in DuckDB)
+            elif func_name == "IFF":
+                self._transform_iff(func)
+            
+            # NVL → COALESCE
+            elif func_name == "NVL":
+                self._transform_nvl(func)
+            
+            # NVL2 → CASE WHEN
+            elif func_name == "NVL2":
+                self._transform_nvl2(func)
+            
+            # TRY_TO_* functions
+            elif func_name.startswith("TRY_TO_"):
+                self._transform_try_to(func)
+            
+            # OBJECT_CONSTRUCT → struct literal
+            elif func_name == "OBJECT_CONSTRUCT":
+                self._transform_object_construct(func)
+            
+            # PARSE_JSON → json() or cast
+            elif func_name == "PARSE_JSON":
+                self._transform_parse_json(func)
+            
+            # ARRAY_CONSTRUCT → list literal
+            elif func_name == "ARRAY_CONSTRUCT":
+                self._transform_array_construct(func)
+            
+            # TO_VARIANT → CAST to JSON
+            elif func_name == "TO_VARIANT":
+                self._transform_to_variant(func)
+            
+            # ZEROIFNULL → COALESCE(x, 0)
+            elif func_name == "ZEROIFNULL":
+                self._transform_zeroifnull(func)
+            
+            # IFNULL → COALESCE
+            elif func_name == "IFNULL":
+                self._transform_nvl(func)  # Same as NVL
+        
+        return statement
+    
+    def _transform_listagg(self, func: exp.Func):
+        """Transform LISTAGG to STRING_AGG."""
+        # LISTAGG(col, delimiter) → STRING_AGG(col, delimiter)
+        # DuckDB's string_agg works similarly
+        args = list(func.args.get("expressions", []))
+        if args:
+            string_agg = exp.Anonymous(
+                this="STRING_AGG",
+                expressions=args
+            )
+            func.replace(string_agg)
+    
+    def _transform_iff(self, func: exp.Func):
+        """Transform IFF to IF (DuckDB syntax)."""
+        # IFF(condition, true_val, false_val) → IF(condition, true_val, false_val)
+        args = list(func.args.get("expressions", []))
+        if len(args) >= 3:
+            if_expr = exp.If(
+                this=args[0],
+                true=args[1],
+                false=args[2]
+            )
+            func.replace(if_expr)
+    
+    def _transform_nvl(self, func: exp.Func):
+        """Transform NVL to COALESCE."""
+        # NVL(a, b) → COALESCE(a, b)
+        args = list(func.args.get("expressions", []))
+        if args:
+            coalesce = exp.Coalesce(this=args[0], expressions=args[1:])
+            func.replace(coalesce)
+    
+    def _transform_nvl2(self, func: exp.Func):
+        """Transform NVL2 to CASE WHEN."""
+        # NVL2(expr, not_null_val, null_val) → CASE WHEN expr IS NOT NULL THEN not_null_val ELSE null_val END
+        args = list(func.args.get("expressions", []))
+        if len(args) >= 3:
+            case_expr = exp.Case(
+                ifs=[
+                    exp.If(
+                        this=exp.Not(this=exp.Is(this=args[0], expression=exp.Null())),
+                        true=args[1]
+                    )
+                ],
+                default=args[2]
+            )
+            func.replace(case_expr)
+    
+    def _transform_try_to(self, func: exp.Func):
+        """Transform TRY_TO_* functions to TRY_CAST."""
+        # TRY_TO_NUMBER(x) → TRY_CAST(x AS DOUBLE)
+        # TRY_TO_DATE(x) → TRY_CAST(x AS DATE)
+        # etc.
+        func_name = func.sql_name().upper()
+        args = list(func.args.get("expressions", []))
+        
+        if not args:
+            return
+        
+        # Map function names to target types
+        type_map = {
+            "TRY_TO_NUMBER": "DOUBLE",
+            "TRY_TO_DECIMAL": "DECIMAL",
+            "TRY_TO_NUMERIC": "DOUBLE",
+            "TRY_TO_DOUBLE": "DOUBLE",
+            "TRY_TO_DATE": "DATE",
+            "TRY_TO_TIME": "TIME",
+            "TRY_TO_TIMESTAMP": "TIMESTAMP",
+            "TRY_TO_TIMESTAMP_NTZ": "TIMESTAMP",
+            "TRY_TO_TIMESTAMP_LTZ": "TIMESTAMP",
+            "TRY_TO_TIMESTAMP_TZ": "TIMESTAMP",
+            "TRY_TO_BOOLEAN": "BOOLEAN",
+            "TRY_TO_VARCHAR": "VARCHAR",
+        }
+        
+        target_type = type_map.get(func_name, "VARCHAR")
+        try_cast = exp.TryCast(
+            this=args[0],
+            to=exp.DataType.build(target_type)
+        )
+        func.replace(try_cast)
+    
+    def _transform_object_construct(self, func: exp.Func):
+        """Transform OBJECT_CONSTRUCT to DuckDB struct."""
+        # OBJECT_CONSTRUCT('key1', val1, 'key2', val2) → {'key1': val1, 'key2': val2}
+        # DuckDB uses struct or map syntax
+        args = list(func.args.get("expressions", []))
+        
+        # For now, use json_object which is more compatible
+        json_obj = exp.Anonymous(
+            this="JSON_OBJECT",
+            expressions=args
+        )
+        func.replace(json_obj)
+    
+    def _transform_parse_json(self, func: exp.Func):
+        """Transform PARSE_JSON to DuckDB JSON cast."""
+        # PARSE_JSON(str) → str::JSON or JSON(str)
+        args = list(func.args.get("expressions", []))
+        if args:
+            # Use CAST to JSON
+            json_cast = exp.Cast(
+                this=args[0],
+                to=exp.DataType.build("JSON")
+            )
+            func.replace(json_cast)
+    
+    def _transform_array_construct(self, func: exp.Func):
+        """Transform ARRAY_CONSTRUCT to DuckDB list."""
+        # ARRAY_CONSTRUCT(a, b, c) → [a, b, c] or list_value(a, b, c)
+        args = list(func.args.get("expressions", []))
+        list_func = exp.Anonymous(
+            this="LIST_VALUE",
+            expressions=args
+        )
+        func.replace(list_func)
+    
+    def _transform_to_variant(self, func: exp.Func):
+        """Transform TO_VARIANT to JSON cast."""
+        # TO_VARIANT(x) → CAST(x AS JSON)
+        args = list(func.args.get("expressions", []))
+        if args:
+            json_cast = exp.Cast(
+                this=args[0],
+                to=exp.DataType.build("JSON")
+            )
+            func.replace(json_cast)
+    
+    def _transform_zeroifnull(self, func: exp.Func):
+        """Transform ZEROIFNULL to COALESCE(x, 0)."""
+        # ZEROIFNULL(x) → COALESCE(x, 0)
+        args = list(func.args.get("expressions", []))
+        if args:
+            coalesce = exp.Coalesce(
+                this=args[0],
+                expressions=[exp.Literal.number(0)]
+            )
+            func.replace(coalesce)
     
     def _transform_flatten(self, statement: exp.Expression) -> exp.Expression:
         """

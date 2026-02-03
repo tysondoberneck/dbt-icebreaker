@@ -114,6 +114,12 @@ class IcebreakerCredentials(Credentials):
     sync_mode: str = "model"
     sync_enabled: bool = True  # Set to False to skip sync entirely
     
+    # === Local Cache Configuration ===
+    # For users without Iceberg - automatically cache sources from Snowflake
+    cache_enabled: bool = True  # Enable automatic source caching
+    cache_ttl_hours: float = 24.0  # Refresh cached tables after this many hours
+    cache_max_gb: float = 10.0  # Maximum cache size in GB
+    
     # Internal state
     _duckdb_extensions: list = field(default_factory=lambda: ["httpfs"])
     

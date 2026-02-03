@@ -351,7 +351,143 @@ def format_savings_report(summary: dict) -> str:
     return "\n".join(lines)
 
 
+def get_weekly_trend() -> dict:
+    """Get savings trend for the last 7 days."""
+    init_db()
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    
+    days = []
+    for i in range(7):
+        date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+        cursor.execute("""
+            SELECT 
+                COALESCE(SUM(savings), 0),
+                COUNT(*)
+            FROM executions
+            WHERE date(timestamp) = ?
+        """, (date,))
+        row = cursor.fetchone()
+        days.append({
+            "date": date,
+            "savings": row[0],
+            "queries": row[1],
+        })
+    
+    conn.close()
+    return {"days": list(reversed(days))}
+
+
+def get_projected_annual_savings() -> float:
+    """Project annual savings based on recent activity."""
+    init_db()
+    conn = sqlite3.connect(get_db_path())
+    cursor = conn.cursor()
+    
+    # Get last 30 days average
+    cutoff = (datetime.now() - timedelta(days=30)).isoformat()
+    cursor.execute("""
+        SELECT COALESCE(SUM(savings), 0)
+        FROM executions
+        WHERE timestamp > ?
+    """, (cutoff,))
+    monthly_savings = cursor.fetchone()[0] or 0
+    conn.close()
+    
+    # Project to annual
+    return monthly_savings * 12
+
+
+def format_enhanced_savings_report() -> str:
+    """Generate the enhanced savings dashboard."""
+    # Get summaries for different periods
+    today = get_savings_summary("today")
+    week = get_savings_summary("week")
+    month = get_savings_summary("month")
+    
+    # Get trends and projections
+    trend = get_weekly_trend()
+    projected = get_projected_annual_savings()
+    
+    lines = [
+        "",
+        "💰 ICEBREAKER SAVINGS DASHBOARD",
+        "═" * 55,
+        "",
+        f"  Today:       ${today['total_savings']:>8.2f}  ({today['local_queries']:>4} local queries)",
+        f"  This Week:   ${week['total_savings']:>8.2f}  ({week['local_queries']:>4} local queries)",
+        f"  This Month:  ${month['total_savings']:>8.2f}  ({month['local_queries']:>4} local queries)",
+        "",
+        "─" * 55,
+        f"  📈 Projected Annual Savings: ${projected:,.0f}",
+        "─" * 55,
+        "",
+    ]
+    
+    # Weekly sparkline
+    if any(d['savings'] > 0 for d in trend['days']):
+        lines.append("  📊 Last 7 Days:")
+        max_savings = max(d['savings'] for d in trend['days']) or 1
+        for day in trend['days']:
+            bar_len = int((day['savings'] / max_savings) * 20) if max_savings > 0 else 0
+            bar = "█" * bar_len
+            date_short = day['date'][5:]  # MM-DD
+            lines.append(f"     {date_short} │{bar:<20} ${day['savings']:.2f}")
+        lines.append("")
+    
+    # Top models
+    if month['top_models']:
+        lines.append("  🏆 Top Models by Savings (This Month):")
+        for i, model in enumerate(month['top_models'][:5], 1):
+            lines.append(
+                f"     {i}. {model['model']:<25} ${model['savings']:>8.2f}"
+            )
+        lines.append("")
+    
+    # Local rate
+    if month['total_queries'] > 0:
+        rate = (month['local_queries'] / month['total_queries']) * 100
+        lines.append(f"  ⚡ Local Execution Rate: {rate:.0f}%")
+        lines.append("")
+    
+    lines.extend([
+        "═" * 55,
+        "",
+    ])
+    
+    return "\n".join(lines)
+
+
 def print_savings(period: str = "all"):
     """Print savings report to console."""
-    summary = get_savings_summary(period)
-    print(format_savings_report(summary))
+    if period == "dashboard":
+        print(format_enhanced_savings_report())
+    else:
+        summary = get_savings_summary(period)
+        print(format_savings_report(summary))
+
+
+def get_summary(period: str = "week") -> dict:
+    """Alias for get_savings_summary for backward compatibility."""
+    return get_savings_summary(period)
+
+
+def export_to_json(filepath: str = None) -> str:
+    """Export savings data to JSON for external dashboards."""
+    if filepath is None:
+        filepath = os.path.expanduser("~/.icebreaker/savings_export.json")
+    
+    data = {
+        "exported_at": datetime.now().isoformat(),
+        "today": get_savings_summary("today"),
+        "week": get_savings_summary("week"),
+        "month": get_savings_summary("month"),
+        "weekly_trend": get_weekly_trend(),
+        "projected_annual": get_projected_annual_savings(),
+    }
+    
+    with open(filepath, 'w') as f:
+        json.dump(data, f, indent=2)
+    
+    return filepath
+

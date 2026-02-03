@@ -1,8 +1,36 @@
 # dbt-icebreaker 🧊
 
-**Local-first development for your Iceberg lakehouse.**
+**Run dbt locally. Sync to Snowflake. Save money.**
 
-Run dbt models locally with DuckDB, sync results to Snowflake automatically. Zero dev costs, same production data.
+Zero-config local development for dbt. Run models on free DuckDB compute, sync results to your cloud warehouse automatically.
+
+---
+
+## 3-Minute Quickstart
+
+```bash
+# 1. Install
+pip install git+https://github.com/tysondoberneck/dbt-icebreaker.git
+
+# 2. Configure (just your Snowflake creds)
+cat > ~/.dbt/profiles.yml << EOF
+my_project:
+  target: dev
+  outputs:
+    dev:
+      type: icebreaker
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      database: ANALYTICS
+      schema: DEV
+EOF
+
+# 3. Run - sources are cached locally, models run FREE
+dbt run
+```
+
+That's it! No Iceberg catalog, no S3 setup, no infrastructure.
 
 ---
 
@@ -74,20 +102,60 @@ With Icebreaker, you have **one workflow**:
 
 ---
 
-## Catalog Integration
+## Data Sources
 
-Icebreaker connects directly to your Iceberg catalog. No data movement, no duplication.
+Icebreaker supports two modes for accessing your source data:
 
-### Supported Catalogs
+| Feature | Source Cache (Default) | Iceberg Catalog |
+|---------|:----------------------:|:---------------:|
+| **Setup complexity** | ✅ Zero config | ⚙️ Requires catalog setup |
+| **Infrastructure** | ✅ None (just Snowflake creds) | ⚙️ Polaris/Glue/Nessie + S3 |
+| **Data freshness** | ⏱️ Point-in-time (TTL refresh) | ✅ Real-time / streaming |
+| **Max data size** | ⚠️ Limited by local disk (~10GB) | ✅ Unlimited (S3-backed) |
+| **Team collaboration** | ⚠️ Single developer (local) | ✅ Shared catalog state |
+| **Works offline** | ✅ Yes (after initial cache) | ❌ Requires S3 access |
+| **Cost** | ✅ Free (local compute) | ✅ Free (local compute) |
 
-| Catalog | Config | Status |
-|---------|--------|--------|
-| **Snowflake Polaris** | `iceberg_catalog_type: rest` | ✅ Production |
-| **AWS Glue** | `iceberg_catalog_type: glue` | ✅ Production |
-| **Nessie** | `iceberg_catalog_type: nessie` | ✅ Production |
-| **REST Catalog** | `iceberg_catalog_type: rest` | ✅ Production |
+**Start with Source Cache** — it works out of the box. Upgrade to Iceberg when you hit scale limits.
 
-### How It Works
+---
+
+### Source Cache (Default)
+
+Zero-config local development. Sources are cached automatically from Snowflake.
+
+```
+Snowflake  ──(first run)──►  ~/.icebreaker/cache/*.parquet
+    ▲                              │
+    │                              ▼
+    └────(sync results)────── DuckDB (FREE)
+```
+
+**How it works:**
+1. First `dbt run`: Downloads source tables from Snowflake as Parquet
+2. Subsequent runs: DuckDB reads from local cache (free!)
+3. Results sync back to Snowflake automatically
+
+**Cache management:**
+```bash
+icebreaker cache status    # Show cached tables, sizes, freshness
+icebreaker cache refresh   # Force refresh from Snowflake  
+icebreaker cache clear     # Delete local cache
+```
+
+**Configuration:**
+```yaml
+# profiles.yml - Source Cache is ON by default
+cache_enabled: true       # Toggle caching
+cache_ttl_hours: 24       # Refresh after 24 hours
+cache_max_gb: 10          # Max local cache size
+```
+
+---
+
+### Iceberg Catalog (Advanced)
+
+For production-scale data or team collaboration, connect to an Iceberg catalog.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -102,6 +170,23 @@ Icebreaker connects directly to your Iceberg catalog. No data movement, no dupli
 │  │  → DuckDB reads Parquet files directly                  │   │
 │  └─────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+**Supported Catalogs:**
+
+| Catalog | Config | Status |
+|---------|--------|--------|
+| Snowflake Polaris | `iceberg_catalog_type: rest` | ✅ Production |
+| AWS Glue | `iceberg_catalog_type: glue` | ✅ Production |
+| Nessie | `iceberg_catalog_type: nessie` | ✅ Production |
+
+**Configuration:**
+```yaml
+# profiles.yml - Iceberg Catalog mode
+iceberg_catalog_url: https://your-polaris.snowflakecomputing.com
+iceberg_catalog_type: rest
+iceberg_warehouse: your_warehouse
+iceberg_token: "{{ env_var('ICEBERG_TOKEN') }}"
 ```
 
 **Key benefits:**
@@ -202,27 +287,6 @@ Analysis:
 | SQL transpilation | sqlglot | 50k+ GitHub stars |
 | Cloud sync | Snowflake COPY INTO | Battle-tested |
 
-### Why This Stack Now?
-
-Three technologies matured simultaneously:
-
-1. **Apache Iceberg** became the standard open table format (adopted by Snowflake, Databricks, AWS)
-2. **DuckDB 1.0** shipped with production-ready Iceberg support
-3. **Iceberg REST catalogs** (Polaris, Glue) enabled standardized metadata access
-
-Icebreaker is the first adapter to provide automatic hybrid routing between local and cloud warehouses, with built-in transpilation and sync.
-
-### Cost Savings Example
-
-| Scenario | Traditional | With Icebreaker | Savings |
-|----------|-------------|-----------------|---------|
-| 10 devs, 10 runs/day, 22 days | $145/month | $0 | **100%** |
-| CI: 50 PRs/week @ 20 models each | $132/month | $0 | **100%** |
-| Staging refresh (nightly) | $22/month | $22/month* | 0% |
-
-*Heavy production workloads still route to cloud by design.
-
----
 
 ## Setup Guide
 
@@ -316,12 +380,17 @@ icebreaker savings
 
 | Command | Description |
 |---------|-------------|
-| `icebreaker status` | Check DuckDB + Snowflake connection |
+| `icebreaker status` | Check DuckDB + Snowflake connection + health |
 | `icebreaker savings` | Show cost savings from local runs |
+| `icebreaker savings --dashboard` | Enhanced dashboard with trends & projections |
+| `icebreaker health` | Run system health checks |
+| `icebreaker summary` | Show last dbt run summary |
+| `icebreaker cache status` | Show cached source tables |
+| `icebreaker cache refresh` | Force refresh all cached sources |
+| `icebreaker cache clear` | Clear local cache |
 | `icebreaker sync <table>` | Manually sync a table to Snowflake |
 | `icebreaker verify` | Compare row counts (local vs Snowflake) |
 | `icebreaker explain <file>` | Show why a model routes LOCAL or CLOUD |
-| `icebreaker help` | Full command reference |
 
 ### Routing Control
 
@@ -379,6 +448,9 @@ SELECT * FROM external_api.live_feed
 | `schema` | Target schema | Required |
 | `sync_mode` | `model` or `batch` | `model` |
 | `sync_enabled` | Enable auto-sync | `true` |
+| `cache_enabled` | Enable source caching | `true` |
+| `cache_ttl_hours` | Cache freshness (hours) | `24.0` |
+| `cache_max_gb` | Max cache size | `10.0` |
 | `max_local_size_gb` | Max data for local processing | `5.0` |
 
 ---
@@ -401,22 +473,19 @@ SELECT * FROM external_api.live_feed
 
 ## Roadmap
 
+**v1.0 Complete! ✅**
+- [x] Zero-config source caching
+- [x] Enhanced savings dashboard with trends
+- [x] Health check system
+- [x] 12 SQL transpilation transforms
+- [x] Run summary after each dbt run
+- [x] Actionable error messages
+
 **Coming Soon**
 - [ ] BigQuery and Databricks cloud adapters
-- [ ] MotherDuck hybrid cloud support  
-- [ ] `icebreaker init` for zero-config setup
+- [ ] MotherDuck hybrid cloud support
 - [ ] GitHub Actions workflow template
-
-**Planned**
-- [ ] Query cost prediction before execution
-- [ ] Smart Iceberg metadata caching
-- [ ] Team-wide savings dashboard
 - [ ] Unity Catalog (Databricks) integration
-
-**Future**
-- [ ] Delta Lake support
-- [ ] dbt Cloud execution environment
-- [ ] Observability hooks (Datadog, Prometheus)
 
 ---
 
