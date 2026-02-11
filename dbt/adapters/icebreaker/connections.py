@@ -44,6 +44,9 @@ from dbt.adapters.contracts.connection import (
 from dbt.adapters.sql import SQLConnectionManager
 from dbt_common.exceptions import DbtRuntimeError
 
+# Import for auto-caching
+import re as regex_module
+
 
 EngineType = Literal["duckdb", "cloud"]
 
@@ -229,13 +232,21 @@ class IcebreakerConnectionManager(SQLConnectionManager):
         abridge_sql_log: bool = False,
         **kwargs,
     ):
-        """Override to handle engine routing and skip incomplete DDL statements."""
+        """Override to handle engine routing, auto-caching, transpilation, and skip incomplete DDL statements."""
         # Skip empty or incomplete SQL
         if not sql or not sql.strip():
             return self.get_thread_connection(), None
         
         sql = sql.strip()
         sql_upper = sql.upper()
+        
+        # === AUTO-CACHE SOURCE TABLES ===
+        # If this looks like a SELECT from a source table, try to auto-cache it
+        self._auto_cache_sources_from_sql(sql)
+        
+        # === TRANSPILE SNOWFLAKE → DUCKDB ===
+        # Convert Snowflake-specific SQL to DuckDB-compatible SQL
+        sql = self._transpile_snowflake_to_duckdb(sql)
         
         # Check for engine switching comment (from materialization)
         if '-- ICEBREAKER_ENGINE:' in sql:
@@ -312,12 +323,409 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             # Use local DuckDB handle
             connection.handle = self._shared_local_handle
         
-        return super().add_query(sql, auto_begin, bindings, abridge_sql_log, **kwargs)
+        # Try local execution first, fallback to Snowflake if it fails
+        try:
+            result = super().add_query(sql, auto_begin, bindings, abridge_sql_log, **kwargs)
+            
+            # After successful local execution, sync to Snowflake if enabled
+            self._sync_to_snowflake_if_enabled(sql)
+            
+            return result
+        except Exception as e:
+            error_str = str(e)
+            # Check if this is a DuckDB-incompatibility error
+            if "does not exist" in error_str and ("Function" in error_str or "Scalar Function" in error_str):
+                # Fallback to Snowflake
+                return self._fallback_to_snowflake(sql, auto_begin, bindings, abridge_sql_log, error_str, **kwargs)
+            else:
+                # Re-raise other errors
+                raise
+    
+    # Sync configuration
+    _sync_to_snowflake: bool = True  # Enable by default
+    _synced_objects: set = set()  # Track synced objects to avoid duplicates
+    
+    def _sync_to_snowflake_if_enabled(self, sql: str) -> None:
+        """Sync DDL results to Snowflake after local execution."""
+        if not self._sync_to_snowflake:
+            return
+        
+        sql_stripped = sql.strip()
+        
+        # Remove dbt comment headers (/* {"app": "dbt", ...} */)
+        import re
+        sql_no_comments = re.sub(r'/\*.*?\*/', '', sql_stripped, flags=re.DOTALL).strip()
+        sql_upper = sql_no_comments.upper()
+        
+        # Only sync CREATE VIEW/TABLE statements
+        if not sql_upper.startswith("CREATE"):
+            return
+        
+        # Extract the object being created (schema.table_name)
+        match = re.search(r'CREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TABLE)\s+(\S+)', sql_no_comments, re.IGNORECASE)
+        if not match:
+            return
+        
+        object_name = match.group(1)
+        print(f"🔄 Sync: detected CREATE for {object_name}")
+        
+        # Skip if already synced
+        if object_name.lower() in self._synced_objects:
+            return
+        
+        try:
+            # Get Snowflake connection
+            if self._snowflake_conn_instance is None:
+                from dbt.adapters.icebreaker.snowflake_helper import get_snowflake_connection
+                self._snowflake_conn_instance = get_snowflake_connection()
+            
+            if self._snowflake_conn_instance is None:
+                return
+            
+            cursor = self._snowflake_conn_instance.cursor()
+            
+            # Ensure schema exists
+            schema_name = object_name.split('.')[0] if '.' in object_name else None
+            if schema_name:
+                try:
+                    cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
+                except Exception:
+                    pass
+            
+            # For views, we need to materialize the data and upload as a table
+            # Query the view from DuckDB and upload to Snowflake
+            if "VIEW" in sql_upper:
+                self._sync_view_as_table(object_name, cursor)
+            else:
+                # For tables, try to execute the same DDL in Snowflake
+                try:
+                    cursor.execute(sql_stripped)
+                    print(f"☁️ Synced {object_name} to Snowflake")
+                except Exception as e:
+                    print(f"⚠️ Could not sync table DDL: {e}")
+            
+            self._synced_objects.add(object_name.lower())
+            
+        except Exception as e:
+            print(f"⚠️ Sync failed for {object_name}: {e}")
+    
+    def _sync_view_as_table(self, view_name: str, snowflake_cursor) -> None:
+        """Materialize a DuckDB view and upload to Snowflake as a table."""
+        try:
+            # Query the view from DuckDB
+            import pandas as pd
+            df = self._shared_local_handle.execute(f"SELECT * FROM {view_name}").fetchdf()
+            
+            if df.empty:
+                print(f"⚠️ View {view_name} is empty, skipping sync")
+                return
+            
+            # Write to Snowflake using write_pandas
+            from snowflake.connector.pandas_tools import write_pandas
+            
+            # Parse schema and table name
+            parts = view_name.split('.')
+            if len(parts) == 2:
+                schema, table = parts
+            else:
+                schema = "PUBLIC"
+                table = view_name
+            
+            # Upload to Snowflake
+            success, nchunks, nrows, _ = write_pandas(
+                conn=self._snowflake_conn_instance,
+                df=df,
+                table_name=table.upper(),
+                schema=schema.upper(),
+                auto_create_table=True,
+                overwrite=True,
+            )
+            
+            if success:
+                print(f"☁️ Synced {view_name} → Snowflake ({nrows:,} rows)")
+            else:
+                print(f"⚠️ Sync failed for {view_name}")
+                
+        except Exception as e:
+            print(f"⚠️ Could not sync view {view_name}: {e}")
+    
+    def _fallback_to_snowflake(self, sql, auto_begin, bindings, abridge_sql_log, error_reason, **kwargs):
+        """Execute on Snowflake when local DuckDB execution fails."""
+        print(f"⚠️ Local execution failed: {error_reason[:80]}...")
+        print(f"☁️ Falling back to Snowflake...")
+        
+        # Get Snowflake connection
+        if self._snowflake_conn_instance is None:
+            from dbt.adapters.icebreaker.snowflake_helper import get_snowflake_connection
+            self._snowflake_conn_instance = get_snowflake_connection()
+        
+        if self._snowflake_conn_instance is None:
+            raise RuntimeError("Cannot fallback to Snowflake: no connection available")
+        
+        # Execute on Snowflake
+        cursor = self._snowflake_conn_instance.cursor()
+        try:
+            # If this is DDL (CREATE VIEW/TABLE), ensure schema exists first
+            sql_stripped = sql.strip()
+            sql_upper = sql_stripped.upper()
+            if sql_upper.startswith("CREATE"):
+                # Extract schema from CREATE statement
+                import re
+                match = re.search(r'CREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TABLE)\s+(\S+)\.', sql_stripped, re.IGNORECASE)
+                if match:
+                    schema_part = match.group(1)  # e.g., "_stg_halo"
+                    try:
+                        cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_part}")
+                        print(f"📁 Ensured schema exists: {schema_part}")
+                    except Exception as schema_err:
+                        print(f"⚠️ Could not create schema {schema_part}: {schema_err}")
+            
+            cursor.execute(sql, bindings if bindings else None)
+            print(f"✅ Executed on Snowflake successfully")
+            
+            # Return in expected format
+            from dbt.adapters.contracts.connection import AdapterResponse
+            response = AdapterResponse(
+                _message="OK",
+                rows_affected=cursor.rowcount or -1,
+            )
+            connection = self.get_thread_connection()
+            return connection, cursor
+        except Exception as sf_error:
+            print(f"❌ Snowflake execution also failed: {sf_error}")
+            raise
     
     def rollback(self, connection):
         """No explicit ROLLBACK for in-memory DuckDB."""
         connection.transaction_open = False
         return connection
+    
+    # === SQL TRANSPILATION (Snowflake → DuckDB) ===
+    _transpilation_enabled: bool = True
+    _transpilation_logged: set = set()  # Track logged transpilations to avoid spam
+    
+    @classmethod
+    def _transpile_snowflake_to_duckdb(cls, sql: str) -> str:
+        """
+        Transpile Snowflake SQL to DuckDB-compatible SQL using sqlglot.
+        
+        Handles Snowflake-specific functions like:
+        - CONVERT_TIMEZONE → timezone()
+        - TRY_CAST → TRY_CAST (DuckDB supports this)
+        - FLATTEN → unnest()
+        - IFF → IF
+        """
+        if not cls._transpilation_enabled:
+            return sql
+        
+        # Skip if SQL is too short or doesn't look like it needs transpilation
+        if len(sql) < 50:
+            return sql
+        
+        try:
+            import sqlglot
+            from sqlglot import exp
+            
+            # Parse as Snowflake, transpile to DuckDB
+            # Use error_level='IGNORE' to handle edge cases gracefully
+            transpiled = sqlglot.transpile(
+                sql,
+                read="snowflake",
+                write="duckdb",
+                error_level="IGNORE",
+            )
+            
+            if transpiled and transpiled[0] != sql:
+                # Log first time we transpile something
+                sql_preview = sql[:60].replace('\n', ' ')
+                if sql_preview not in cls._transpilation_logged:
+                    print(f"🔄 Transpiled: {sql_preview}...")
+                    cls._transpilation_logged.add(sql_preview)
+                return transpiled[0]
+            
+            return sql
+            
+        except Exception as e:
+            # If transpilation fails, return original SQL
+            # The fallback-to-Snowflake logic will catch any execution errors
+            return sql
+    
+    # === AUTO-CACHE SUPPORT ===
+    _source_cache_instance = None
+    _snowflake_conn_instance = None
+    _cached_tables: set = set()  # Track tables we've already tried to cache
+    
+    @classmethod
+    def _auto_cache_sources_from_sql(cls, sql: str) -> None:
+        """
+        Parse SQL for source table references and auto-cache from Snowflake.
+        
+        Looks for patterns like:
+        - FROM schema.table
+        - JOIN schema.table
+        - from "schema"."table"
+        
+        Caches tables that don't exist in DuckDB yet.
+        """
+        if cls._shared_local_handle is None:
+            return
+        
+        # Parse SQL for table references (schema.table pattern)
+        # Matches: FROM/JOIN followed by schema.table (case insensitive)
+        table_pattern = regex_module.compile(
+            r'(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)',
+            regex_module.IGNORECASE
+        )
+        
+        matches = table_pattern.findall(sql)
+        if not matches:
+            return
+        
+        for schema, table in matches:
+            table_key = f"{schema}.{table}".lower()
+            
+            # Skip if we already tried to cache this
+            if table_key in cls._cached_tables:
+                continue
+            
+            # Check if table already exists in DuckDB
+            try:
+                cls._shared_local_handle.execute(f"SELECT 1 FROM {schema}.{table} LIMIT 0")
+                cls._cached_tables.add(table_key)
+                continue  # Table exists, no need to cache
+            except Exception:
+                pass  # Table doesn't exist, need to cache
+            
+            # Try to cache from Snowflake
+            cls._cache_table_from_snowflake(schema, table)
+            cls._cached_tables.add(table_key)
+    
+    @classmethod
+    def _cache_table_from_snowflake(cls, schema: str, table: str) -> bool:
+        """
+        Cache a single table from Snowflake to local Parquet.
+        
+        Uses key-pair authentication from profiles.yml.
+        Resolves actual database/schema from dbt manifest.json.
+        """
+        try:
+            # Get Snowflake connection (lazy initialization)
+            if cls._snowflake_conn_instance is None:
+                from dbt.adapters.icebreaker.snowflake_helper import get_snowflake_connection
+                cls._snowflake_conn_instance = get_snowflake_connection()
+                if cls._snowflake_conn_instance:
+                    print("🔌 Auto-cache connected to Snowflake (key-pair auth)")
+            
+            if cls._snowflake_conn_instance is None:
+                print(f"⚠️ Cannot cache {schema}.{table}: No Snowflake connection")
+                return False
+            
+            # Get source cache instance
+            if cls._source_cache_instance is None:
+                from dbt.adapters.icebreaker.source_cache import SourceCache, CacheConfig
+                cache_config = CacheConfig(cache_enabled=True)
+                cls._source_cache_instance = SourceCache(
+                    config=cache_config,
+                    snowflake_conn=cls._snowflake_conn_instance,
+                    duckdb_conn=cls._shared_local_handle,
+                )
+            
+            # Try to cache the table
+            print(f"📥 Auto-caching {schema}.{table} from Snowflake...")
+            
+            # Resolve actual database and schema from dbt manifest
+            database, actual_schema = cls._resolve_source_from_manifest(schema, table)
+            
+            success = cls._source_cache_instance.ensure_cached(
+                database=database,
+                schema=actual_schema,
+                table=table,
+                duckdb_conn=cls._shared_local_handle,
+            )
+            
+            if success:
+                print(f"   ✅ Cached {schema}.{table}")
+            else:
+                print(f"   ⚠️ Could not cache {schema}.{table}")
+            
+            return success
+            
+        except Exception as e:
+            print(f"   ❌ Failed to cache {schema}.{table}: {e}")
+            return False
+    
+    # Cache for manifest sources
+    _manifest_sources: dict = {}
+    _manifest_loaded: bool = False
+    
+    @classmethod
+    def _resolve_source_from_manifest(cls, schema: str, table: str) -> tuple:
+        """
+        Resolve actual Snowflake database.schema from dbt manifest.json.
+        
+        The manifest contains source definitions with their true database/schema.
+        Falls back to profile database if manifest unavailable.
+        """
+        # Load manifest if not already loaded
+        if not cls._manifest_loaded:
+            cls._load_manifest_sources()
+        
+        # Look for this source in manifest
+        # Source keys are like: source.project_name.source_name.table_name
+        # The schema name in compiled SQL is typically the source_name
+        lookup_key = f"{schema.lower()}.{table.lower()}"
+        
+        if lookup_key in cls._manifest_sources:
+            source_info = cls._manifest_sources[lookup_key]
+            return source_info["database"], source_info["schema"]
+        
+        # Fallback: use profile database and schema as-is
+        from dbt.adapters.icebreaker.snowflake_helper import find_icebreaker_profile
+        profile = find_icebreaker_profile() or {}
+        fallback_db = profile.get("database", "DBT_ANALYTICS_RAW")
+        return fallback_db, schema.upper()
+    
+    @classmethod
+    def _load_manifest_sources(cls) -> None:
+        """Load source definitions from dbt manifest.json."""
+        import json
+        import os
+        
+        cls._manifest_loaded = True
+        
+        # Look for manifest in common locations
+        manifest_paths = [
+            "target/manifest.json",
+            os.path.join(os.getcwd(), "target/manifest.json"),
+        ]
+        
+        for manifest_path in manifest_paths:
+            if os.path.exists(manifest_path):
+                try:
+                    with open(manifest_path, 'r') as f:
+                        manifest = json.load(f)
+                    
+                    # Extract source definitions
+                    sources = manifest.get("sources", {})
+                    for source_id, source_def in sources.items():
+                        # source_id like: source.obie_data_model.halo.carriers_raw
+                        source_name = source_def.get("source_name", "").lower()
+                        table_name = source_def.get("name", "").lower()
+                        
+                        # Store with key: source_name.table_name
+                        key = f"{source_name}.{table_name}"
+                        cls._manifest_sources[key] = {
+                            "database": source_def.get("database", "").upper(),
+                            "schema": source_def.get("schema", "").upper(),
+                        }
+                    
+                    print(f"📄 Loaded {len(cls._manifest_sources)} sources from manifest")
+                    return
+                    
+                except Exception as e:
+                    print(f"⚠️ Could not load manifest: {e}")
+        
+        print("⚠️ No manifest.json found - run 'dbt parse' first for auto source resolution")
     
     # Class-level shared connections (single connection shared by all threads)
     _shared_local_handle: Optional[duckdb.DuckDBPyConnection] = None

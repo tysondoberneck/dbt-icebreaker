@@ -232,7 +232,8 @@ class SourceCache:
         cursor = self.snowflake_conn.cursor()
         try:
             # Get data using pandas for efficient Parquet writing
-            query = f'SELECT * FROM "{database}"."{schema}"."{table}"'
+            # Uppercase identifiers for Snowflake (default case folding)
+            query = f'SELECT * FROM {database.upper()}.{schema.upper()}.{table.upper()}'
             cursor.execute(query)
             
             # Fetch to pandas DataFrame
