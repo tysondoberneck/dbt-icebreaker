@@ -212,6 +212,81 @@ class SourceCache:
         
         return entry
     
+    def _get_variant_columns(
+        self,
+        database: str,
+        schema: str,
+        table: str,
+        cursor,
+    ) -> List[str]:
+        """
+        Detect VARIANT, OBJECT, and ARRAY columns in a Snowflake table.
+        
+        These types are not supported by DuckDB and must be cast to VARCHAR
+        before caching locally.
+        
+        Returns:
+            List of column names that have VARIANT/OBJECT/ARRAY types.
+        """
+        unsupported_types = ("VARIANT", "OBJECT", "ARRAY")
+        query = (
+            f"SELECT COLUMN_NAME, DATA_TYPE "
+            f"FROM {database.upper()}.INFORMATION_SCHEMA.COLUMNS "
+            f"WHERE TABLE_SCHEMA = '{schema.upper()}' "
+            f"AND TABLE_NAME = '{table.upper()}' "
+            f"AND DATA_TYPE IN ({','.join(repr(t) for t in unsupported_types)}) "
+            f"ORDER BY ORDINAL_POSITION"
+        )
+        try:
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            variant_cols = [row[0] for row in rows]
+            if variant_cols:
+                print(f"   🔄 Detected {len(variant_cols)} VARIANT/OBJECT/ARRAY column(s): {', '.join(variant_cols)}")
+            return variant_cols
+        except Exception as e:
+            print(f"   ⚠️ Could not detect VARIANT columns: {e}")
+            return []
+    
+    def _build_select_with_variant_cast(
+        self,
+        database: str,
+        schema: str,
+        table: str,
+        variant_columns: List[str],
+        cursor,
+    ) -> str:
+        """
+        Build a SELECT expression that casts VARIANT columns to VARCHAR.
+        
+        Non-VARIANT columns are selected as-is. VARIANT columns are wrapped
+        in TO_VARCHAR() to produce JSON text that DuckDB can handle.
+        
+        Returns:
+            Comma-separated column expression string for use in SELECT.
+        """
+        # Get all columns in order
+        query = (
+            f"SELECT COLUMN_NAME "
+            f"FROM {database.upper()}.INFORMATION_SCHEMA.COLUMNS "
+            f"WHERE TABLE_SCHEMA = '{schema.upper()}' "
+            f"AND TABLE_NAME = '{table.upper()}' "
+            f"ORDER BY ORDINAL_POSITION"
+        )
+        cursor.execute(query)
+        all_columns = [row[0] for row in cursor.fetchall()]
+        
+        variant_set = {c.upper() for c in variant_columns}
+        
+        expressions = []
+        for col in all_columns:
+            if col.upper() in variant_set:
+                expressions.append(f'TO_VARCHAR("{col}") AS "{col}"')
+            else:
+                expressions.append(f'"{col}"')
+        
+        return ", ".join(expressions)
+    
     def _download_from_snowflake(
         self,
         database: str,
@@ -222,6 +297,9 @@ class SourceCache:
         """
         Download table from Snowflake and save as Parquet.
         
+        Detects VARIANT/OBJECT/ARRAY columns and casts them to VARCHAR
+        before downloading, since DuckDB cannot handle these types.
+        
         Returns:
             Tuple of (row_count, size_bytes)
         """
@@ -231,9 +309,21 @@ class SourceCache:
         # Query data from Snowflake
         cursor = self.snowflake_conn.cursor()
         try:
-            # Get data using pandas for efficient Parquet writing
-            # Uppercase identifiers for Snowflake (default case folding)
-            query = f'SELECT * FROM {database.upper()}.{schema.upper()}.{table.upper()}'
+            db = database.upper()
+            sch = schema.upper()
+            tbl = table.upper()
+            
+            # Detect VARIANT columns and cast them to VARCHAR for DuckDB compat
+            variant_cols = self._get_variant_columns(db, sch, tbl, cursor)
+            
+            if variant_cols:
+                col_expressions = self._build_select_with_variant_cast(
+                    db, sch, tbl, variant_cols, cursor
+                )
+                query = f'SELECT {col_expressions} FROM {db}.{sch}.{tbl}'
+            else:
+                query = f'SELECT * FROM {db}.{sch}.{tbl}'
+            
             cursor.execute(query)
             
             # Fetch to pandas DataFrame

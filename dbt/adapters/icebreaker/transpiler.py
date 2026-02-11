@@ -96,6 +96,24 @@ class Transpiler:
         # Transform Snowflake-specific functions
         statement = self._transform_snowflake_functions(statement)
         
+        # Transform VARIANT casts to JSON (DuckDB doesn't support VARIANT)
+        statement = self._transform_variant_casts(statement)
+        
+        return statement
+    
+    def _transform_variant_casts(self, statement: exp.Expression) -> exp.Expression:
+        """
+        Transform CAST(x AS VARIANT) to CAST(x AS JSON) for DuckDB.
+        
+        Snowflake's VARIANT type has no DuckDB equivalent. JSON is the closest
+        match and handles semi-structured data similarly.
+        """
+        for cast_node in list(statement.find_all(exp.Cast)):
+            target_type = cast_node.args.get("to")
+            if target_type:
+                type_str = target_type.sql(dialect="snowflake").upper()
+                if type_str == "VARIANT":
+                    cast_node.args["to"] = exp.DataType.build("JSON")
         return statement
     
     def _transform_snowflake_functions(self, statement: exp.Expression) -> exp.Expression:
@@ -115,6 +133,10 @@ class Transpiler:
         """
         for func in list(statement.find_all(exp.Func)):
             func_name = func.sql_name().upper()
+            # sqlglot parses unrecognized functions (e.g. TO_VARIANT) as Anonymous
+            # where sql_name() returns 'ANONYMOUS' — check func.this for the real name
+            if func_name == "ANONYMOUS" and isinstance(func, exp.Anonymous) and func.this:
+                func_name = func.this.upper()
             
             # LISTAGG → STRING_AGG
             if func_name == "LISTAGG":

@@ -334,12 +334,33 @@ class IcebreakerConnectionManager(SQLConnectionManager):
         except Exception as e:
             error_str = str(e)
             # Check if this is a DuckDB-incompatibility error
-            if "does not exist" in error_str and ("Function" in error_str or "Scalar Function" in error_str):
+            if self._is_duckdb_incompatibility(error_str):
                 # Fallback to Snowflake
                 return self._fallback_to_snowflake(sql, auto_begin, bindings, abridge_sql_log, error_str, **kwargs)
             else:
                 # Re-raise other errors
                 raise
+    
+    @staticmethod
+    def _is_duckdb_incompatibility(error_str: str) -> bool:
+        """
+        Check if an error indicates DuckDB cannot handle this SQL.
+        
+        Returns True for errors that should trigger Snowflake fallback:
+        - Missing functions (e.g., Snowflake UDFs)
+        - VARIANT/OBJECT/ARRAY type errors
+        - Not implemented features in DuckDB
+        """
+        # Function not found (existing check)
+        if "does not exist" in error_str and ("Function" in error_str or "Scalar Function" in error_str):
+            return True
+        # VARIANT type not supported in DuckDB
+        if "VARIANT" in error_str.upper() and ("Not implemented" in error_str or "cannot be created" in error_str):
+            return True
+        # General DuckDB "Not implemented" errors
+        if "Not implemented Error" in error_str:
+            return True
+        return False
     
     # Sync configuration
     _sync_to_snowflake: bool = True  # Enable by default
@@ -507,13 +528,15 @@ class IcebreakerConnectionManager(SQLConnectionManager):
     @classmethod
     def _transpile_snowflake_to_duckdb(cls, sql: str) -> str:
         """
-        Transpile Snowflake SQL to DuckDB-compatible SQL using sqlglot.
+        Transpile Snowflake SQL to DuckDB-compatible SQL using the Transpiler.
         
-        Handles Snowflake-specific functions like:
+        Uses the project's Transpiler class which applies all custom transforms:
         - CONVERT_TIMEZONE → timezone()
         - TRY_CAST → TRY_CAST (DuckDB supports this)
-        - FLATTEN → unnest()
+        - FLATTEN → UNNEST
         - IFF → IF
+        - VARIANT casts → JSON
+        - And more (see transpiler.py)
         """
         if not cls._transpilation_enabled:
             return sql
@@ -523,25 +546,18 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             return sql
         
         try:
-            import sqlglot
-            from sqlglot import exp
+            from dbt.adapters.icebreaker.transpiler import Transpiler, TranspilationError
             
-            # Parse as Snowflake, transpile to DuckDB
-            # Use error_level='IGNORE' to handle edge cases gracefully
-            transpiled = sqlglot.transpile(
-                sql,
-                read="snowflake",
-                write="duckdb",
-                error_level="IGNORE",
-            )
+            transpiler = Transpiler(source_dialect="snowflake")
+            transpiled = transpiler.to_duckdb(sql)
             
-            if transpiled and transpiled[0] != sql:
+            if transpiled and transpiled != sql:
                 # Log first time we transpile something
                 sql_preview = sql[:60].replace('\n', ' ')
                 if sql_preview not in cls._transpilation_logged:
                     print(f"🔄 Transpiled: {sql_preview}...")
                     cls._transpilation_logged.add(sql_preview)
-                return transpiled[0]
+                return transpiled
             
             return sql
             

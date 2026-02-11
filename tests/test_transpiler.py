@@ -128,3 +128,42 @@ class TestFlattenTranspilation:
         can_transpile, error = transpiler.can_transpile(sql)
         
         assert can_transpile is True
+
+
+class TestVariantTranspilation:
+    """Test cases for Snowflake VARIANT type handling."""
+    
+    def test_variant_cast_to_json(self):
+        """CAST(x AS VARIANT) should become CAST(x AS JSON) for DuckDB."""
+        sql = "SELECT CAST(my_col AS VARIANT) AS v FROM my_table"
+        transpiler = Transpiler(source_dialect="snowflake")
+        result = transpiler.to_duckdb(sql)
+        
+        # Should convert VARIANT to JSON
+        assert "VARIANT" not in result.upper()
+        assert "JSON" in result.upper()
+    
+    def test_variant_shorthand_cast(self):
+        """x::VARIANT should become CAST(x AS JSON) for DuckDB."""
+        sql = "SELECT my_col::VARIANT AS v FROM my_table"
+        transpiler = Transpiler(source_dialect="snowflake")
+        result = transpiler.to_duckdb(sql)
+        
+        assert "VARIANT" not in result.upper()
+    
+    def test_to_variant_function(self):
+        """TO_VARIANT(x) should become CAST(x AS JSON)."""
+        sql = "SELECT TO_VARIANT(my_col) AS v FROM my_table"
+        transpiler = Transpiler(source_dialect="snowflake")
+        result = transpiler.to_duckdb(sql)
+        
+        # TO_VARIANT is already handled, verify it still works
+        assert "TO_VARIANT" not in result.upper()
+    
+    def test_non_variant_cast_unchanged(self):
+        """Non-VARIANT casts should not be affected."""
+        sql = "SELECT CAST(my_col AS VARCHAR) AS v FROM my_table"
+        transpiler = Transpiler(source_dialect="snowflake")
+        result = transpiler.to_duckdb(sql)
+        
+        assert "VARCHAR" in result.upper() or "TEXT" in result.upper()
