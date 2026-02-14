@@ -413,17 +413,10 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                 except Exception:
                     pass
             
-            # For views, we need to materialize the data and upload as a table
-            # Query the view from DuckDB and upload to Snowflake
-            if "VIEW" in sql_upper:
-                self._sync_view_as_table(object_name, cursor)
-            else:
-                # For tables, try to execute the same DDL in Snowflake
-                try:
-                    cursor.execute(sql_stripped)
-                    print(f"☁️ Synced {object_name} to Snowflake")
-                except Exception as e:
-                    print(f"⚠️ Could not sync table DDL: {e}")
+            # For both views and tables, materialize from DuckDB and upload
+            # via write_pandas. Replaying DDL doesn't work because transpiled
+            # DuckDB SQL uses unquoted lowercase identifiers that Snowflake rejects.
+            self._sync_view_as_table(object_name, cursor)
             
             self._synced_objects.add(object_name.lower())
             
@@ -553,7 +546,11 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             
             if transpiled and transpiled != sql:
                 # Log first time we transpile something
-                sql_preview = sql[:60].replace('\n', ' ')
+                # Strip dbt comment headers before generating dedup key,
+                # otherwise all models share the same prefix
+                import re as _re
+                sql_for_key = _re.sub(r'/\*.*?\*/', '', sql, count=1, flags=_re.DOTALL).strip()
+                sql_preview = sql_for_key[:80].replace('\n', ' ')
                 if sql_preview not in cls._transpilation_logged:
                     print(f"🔄 Transpiled: {sql_preview}...")
                     cls._transpilation_logged.add(sql_preview)

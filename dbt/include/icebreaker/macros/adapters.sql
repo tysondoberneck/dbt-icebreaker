@@ -82,6 +82,15 @@
     ORDER BY ordinal_position
 {% endmacro %}
 
+{# Cross-database timestamp macros #}
+{% macro icebreaker__current_timestamp() %}
+    current_timestamp
+{% endmacro %}
+
+{% macro icebreaker__current_timestamp_backcompat() %}
+    current_timestamp::{{ type_timestamp() }}
+{% endmacro %}
+
 {# Utility macro to check current engine #}
 {% macro get_engine() %}
     {{ return(adapter.connections._active_engine) }}
