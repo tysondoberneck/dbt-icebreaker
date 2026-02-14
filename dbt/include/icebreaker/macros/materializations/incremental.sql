@@ -76,9 +76,9 @@
         {# ============================================================ #}
         
         {% if full_refresh_mode %}
-            {{ log("🔄 " ~ identifier ~ " → FULL REFRESH (" ~ reason ~ ")", info=True) }}
+            {{ log(identifier ~ " -> FULL REFRESH (" ~ reason ~ ")", info=True) }}
         {% else %}
-            {{ log("🆕 " ~ identifier ~ " → FIRST RUN (" ~ reason ~ ")", info=True) }}
+            {{ log(identifier ~ " -> FIRST RUN (" ~ reason ~ ")", info=True) }}
         {% endif %}
         
         {%- set start_time = modules.datetime.datetime.now() -%}
@@ -98,9 +98,9 @@
         {# ============================================================ #}
         
         {% if is_cloud %}
-            {{ log("☁️  📈 " ~ identifier ~ " → INCREMENTAL (" ~ strategy ~ ", " ~ reason ~ ")", info=True) }}
+            {{ log(identifier ~ " -> INCREMENTAL (" ~ strategy ~ ", " ~ reason ~ ")", info=True) }}
         {% else %}
-            {{ log("🏠 📈 " ~ identifier ~ " → INCREMENTAL (" ~ strategy ~ ", " ~ reason ~ ")", info=True) }}
+            {{ log(identifier ~ " -> INCREMENTAL (" ~ strategy ~ ", " ~ reason ~ ")", info=True) }}
         {% endif %}
         
         {%- set start_time = modules.datetime.datetime.now() -%}
@@ -203,7 +203,7 @@
     {{ icebreaker_log_execution(identifier, venue, duration) }}
     
     {# Sync to all engines #}
-    {{ log("🔄 Syncing " ~ identifier ~ " to all engines...", info=True) }}
+    {{ log("Syncing " ~ identifier ~ " to all engines...", info=True) }}
     {% call statement('sync') %}
         -- ICEBREAKER_SYNC:{{ schema }}.{{ identifier }}
         SELECT 1

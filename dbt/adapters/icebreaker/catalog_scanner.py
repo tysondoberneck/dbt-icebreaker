@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta
 
+from dbt.adapters.icebreaker.console import console
+
 
 @dataclass
 class TableStats:
@@ -120,7 +122,7 @@ class CatalogScanner:
                 return None
                 
         except Exception as e:
-            print(f"⚠️ Catalog query failed for {schema}.{table}: {e}")
+            console.warn(f"Catalog query failed for {schema}.{table}: {e}")
             return None
     
     def _query_snowflake(self, schema: str, table: str) -> Optional[TableStats]:

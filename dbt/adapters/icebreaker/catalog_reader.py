@@ -11,6 +11,8 @@ any data in the user's warehouse.
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 
+from dbt.adapters.icebreaker.console import console
+
 
 @dataclass
 class TableMetadata:
@@ -278,8 +280,8 @@ def read_snowflake_query_history(
         
     except Exception as e:
         # ACCOUNT_USAGE requires specific privileges
-        print(f"⚠️ Query history access failed: {e}")
-        print("   (Requires ACCOUNTADMIN or SNOWFLAKE.ACCOUNT_USAGE grants)")
+        console.warn(f"Query history access failed: {e}")
+        console.info("Requires ACCOUNTADMIN or SNOWFLAKE.ACCOUNT_USAGE grants")
         return {}
         
     finally:

@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from dbt.adapters.icebreaker.console import console
+
 
 @dataclass
 class SyncResult:
@@ -30,10 +32,10 @@ class SyncResult:
     
     def __str__(self) -> str:
         if self.success:
-            v = "✓" if self.verified else "?"
-            return f"✅ {self.table_id}: {self.source_row_count} rows synced ({v})"
+            v = "verified" if self.verified else "unverified"
+            return f"{self.table_id}: {self.source_row_count} rows synced ({v})"
         else:
-            return f"❌ {self.table_id}: {self.error}"
+            return f"{self.table_id}: {self.error}"
 
 
 @dataclass
@@ -137,7 +139,7 @@ class SyncManager:
                 
             except Exception as e:
                 if attempt < self.config.max_retries:
-                    print(f"⚠️ Sync attempt {attempt} failed: {e}")
+                    console.warn(f"Sync attempt {attempt} failed: {e}")
                     time.sleep(self.config.retry_delay_seconds * attempt)
                 else:
                     # Max retries exceeded
@@ -211,7 +213,7 @@ class SyncManager:
                     self.cloud, self.local, schema, table
                 )
         else:
-            raise ValueError(f"Invalid sync direction: {source_engine} → {target_engine}")
+            raise ValueError(f"Invalid sync direction: {source_engine} -> {target_engine}")
     
     def _is_attached(self) -> bool:
         """Check if local_db is attached to cloud connection."""
@@ -453,10 +455,10 @@ class SyncOrchestrator:
             results.append(result)
             
             if not result.success:
-                print(f"❌ Sync failed for {schema}.{table}, stopping")
+                console.error(f"Sync failed for {schema}.{table}, stopping")
                 break
             else:
-                print(f"✅ Synced {schema}.{table}")
+                console.success(f"Synced {schema}.{table}")
         
         return results
     

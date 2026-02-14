@@ -17,6 +17,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from dbt.adapters.icebreaker.console import console
+
 
 @dataclass
 class MetadataConfig:
@@ -207,7 +209,7 @@ HAVING model_name IS NOT NULL AND model_name != ''
             return stats
             
         except Exception as e:
-            print(f"Warning: Failed to harvest Snowflake stats: {e}")
+            console.warn(f"Failed to harvest Snowflake stats: {e}")
             return {}
     
     def update_cache(self, stats: Dict[str, ModelStats], source: str) -> None:

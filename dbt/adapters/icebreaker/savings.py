@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Optional, List
 
+from dbt.adapters.icebreaker.console import console
+
 
 # Default cost assumptions based on actual cloud pricing (2024/2025)
 # Users can override these in profiles.yml under icebreaker.cost_config
@@ -313,38 +315,38 @@ def format_savings_report(summary: dict) -> str:
     
     lines = [
         "",
-        "🧊 ICEBREAKER SAVINGS REPORT",
-        "═" * 40,
-        f"📅 Period: {period_name}",
+        "ICEBREAKER SAVINGS REPORT",
+        "=" * 40,
+        f"Period: {period_name}",
         "",
-        f"💰 Total Saved: ${summary['total_savings']:.2f}",
+        f"Total Saved: ${summary['total_savings']:.2f}",
         "",
-        f"📊 Query Stats:",
-        f"   Total queries:  {summary['total_queries']:,}",
-        f"   Run locally:    {summary['local_queries']:,} (FREE)",
-        f"   Run on cloud:   {summary['cloud_queries']:,}",
+        "Query Stats:",
+        f"  Total queries:  {summary['total_queries']:,}",
+        f"  Run locally:    {summary['local_queries']:,} (FREE)",
+        f"  Run on cloud:   {summary['cloud_queries']:,}",
         "",
     ]
     
     if summary["local_queries"] > 0:
         pct_local = (summary["local_queries"] / summary["total_queries"]) * 100
-        lines.append(f"   Local rate:     {pct_local:.1f}%")
+        lines.append(f"  Local rate:     {pct_local:.1f}%")
     
     if summary["top_models"]:
         lines.extend([
             "",
-            "🏆 Top Savings by Model:",
+            "Top Savings by Model:",
         ])
         for i, model in enumerate(summary["top_models"], 1):
             lines.append(
-                f"   {i}. {model['model']}: ${model['savings']:.2f} "
+                f"  {i}. {model['model']}: ${model['savings']:.2f} "
                 f"({model['runs']} runs)"
             )
     
     lines.extend([
         "",
-        "═" * 40,
-        "💡 Keep running locally to save more!",
+        "=" * 40,
+        "Keep running locally to save more!",
         "",
     ])
     
@@ -411,33 +413,33 @@ def format_enhanced_savings_report() -> str:
     
     lines = [
         "",
-        "💰 ICEBREAKER SAVINGS DASHBOARD",
-        "═" * 55,
+        "ICEBREAKER SAVINGS DASHBOARD",
+        "=" * 55,
         "",
         f"  Today:       ${today['total_savings']:>8.2f}  ({today['local_queries']:>4} local queries)",
         f"  This Week:   ${week['total_savings']:>8.2f}  ({week['local_queries']:>4} local queries)",
         f"  This Month:  ${month['total_savings']:>8.2f}  ({month['local_queries']:>4} local queries)",
         "",
-        "─" * 55,
-        f"  📈 Projected Annual Savings: ${projected:,.0f}",
-        "─" * 55,
+        "-" * 55,
+        f"  Projected Annual Savings: ${projected:,.0f}",
+        "-" * 55,
         "",
     ]
     
     # Weekly sparkline
     if any(d['savings'] > 0 for d in trend['days']):
-        lines.append("  📊 Last 7 Days:")
+        lines.append("  Last 7 Days:")
         max_savings = max(d['savings'] for d in trend['days']) or 1
         for day in trend['days']:
             bar_len = int((day['savings'] / max_savings) * 20) if max_savings > 0 else 0
-            bar = "█" * bar_len
+            bar = "#" * bar_len
             date_short = day['date'][5:]  # MM-DD
-            lines.append(f"     {date_short} │{bar:<20} ${day['savings']:.2f}")
+            lines.append(f"     {date_short} |{bar:<20} ${day['savings']:.2f}")
         lines.append("")
     
     # Top models
     if month['top_models']:
-        lines.append("  🏆 Top Models by Savings (This Month):")
+        lines.append("  Top Models by Savings (This Month):")
         for i, model in enumerate(month['top_models'][:5], 1):
             lines.append(
                 f"     {i}. {model['model']:<25} ${model['savings']:>8.2f}"
@@ -447,11 +449,11 @@ def format_enhanced_savings_report() -> str:
     # Local rate
     if month['total_queries'] > 0:
         rate = (month['local_queries'] / month['total_queries']) * 100
-        lines.append(f"  ⚡ Local Execution Rate: {rate:.0f}%")
+        lines.append(f"  Local Execution Rate: {rate:.0f}%")
         lines.append("")
     
     lines.extend([
-        "═" * 55,
+        "=" * 55,
         "",
     ])
     
@@ -461,10 +463,10 @@ def format_enhanced_savings_report() -> str:
 def print_savings(period: str = "all"):
     """Print savings report to console."""
     if period == "dashboard":
-        print(format_enhanced_savings_report())
+        console.info(format_enhanced_savings_report())
     else:
         summary = get_savings_summary(period)
-        print(format_savings_report(summary))
+        console.info(format_savings_report(summary))
 
 
 def get_summary(period: str = "week") -> dict:

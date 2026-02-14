@@ -79,9 +79,9 @@
         {# ============================================================ #}
         
         {% if is_cloud %}
-            {{ log("☁️  📸 " ~ identifier ~ " → SNAPSHOT INIT (" ~ reason ~ ")", info=True) }}
+            {{ log(identifier ~ " -> SNAPSHOT INIT (" ~ reason ~ ")", info=True) }}
         {% else %}
-            {{ log("🏠 📸 " ~ identifier ~ " → SNAPSHOT INIT (" ~ reason ~ ")", info=True) }}
+            {{ log(identifier ~ " -> SNAPSHOT INIT (" ~ reason ~ ")", info=True) }}
         {% endif %}
         
         {%- set start_time = modules.datetime.datetime.now() -%}
@@ -119,9 +119,9 @@
         {# ============================================================ #}
         
         {% if is_cloud %}
-            {{ log("☁️  📸 " ~ identifier ~ " → SNAPSHOT UPDATE (" ~ reason ~ ")", info=True) }}
+            {{ log(identifier ~ " -> SNAPSHOT UPDATE (" ~ reason ~ ")", info=True) }}
         {% else %}
-            {{ log("🏠 📸 " ~ identifier ~ " → SNAPSHOT UPDATE (" ~ reason ~ ")", info=True) }}
+            {{ log(identifier ~ " -> SNAPSHOT UPDATE (" ~ reason ~ ")", info=True) }}
         {% endif %}
         
         {%- set start_time = modules.datetime.datetime.now() -%}
@@ -220,7 +220,7 @@
     {{ icebreaker_log_execution(identifier, venue, duration) }}
     
     {# Sync #}
-    {{ log("🔄 Syncing " ~ identifier ~ " to all engines...", info=True) }}
+    {{ log("Syncing " ~ identifier ~ " to all engines...", info=True) }}
     {% call statement('sync') %}
         -- ICEBREAKER_SYNC:{{ schema }}.{{ identifier }}
         SELECT 1

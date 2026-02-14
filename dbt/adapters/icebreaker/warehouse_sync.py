@@ -12,6 +12,8 @@ import tempfile
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 
+from dbt.adapters.icebreaker.console import console
+
 
 @dataclass
 class SyncResult:
@@ -50,7 +52,7 @@ def sync_to_snowflake(
             source_conn.execute(f"COPY (SELECT * FROM {full_source}) TO '{parquet_path}' (FORMAT PARQUET)")
             
             file_size_mb = os.path.getsize(parquet_path) / (1024 * 1024)
-            print(f"📦 Exported {full_source} ({file_size_mb:.1f} MB)")
+            console.step(f"Exported {full_source} ({file_size_mb:.1f} MB)")
             
             # Upload to Snowflake
             cursor = snowflake_conn.cursor()
@@ -89,7 +91,7 @@ def sync_to_snowflake(
             row_count = cursor.fetchone()[0]
             
             cursor.close()
-            print(f"✅ Snowflake: {full_target} ({row_count:,} rows)")
+            console.success(f"Snowflake: {full_target} ({row_count:,} rows)")
             
             return SyncResult(
                 warehouse="snowflake",
@@ -99,7 +101,7 @@ def sync_to_snowflake(
             )
             
         except Exception as e:
-            print(f"❌ Snowflake sync failed: {e}")
+            console.error(f"Snowflake sync failed: {e}")
             return SyncResult(
                 warehouse="snowflake",
                 table_name=full_target,
@@ -140,7 +142,7 @@ def sync_to_all_warehouses(
     success_count = sum(1 for r in results if r.success)
     total_count = len(results)
     if total_count > 0:
-        print(f"🔄 Synced to {success_count}/{total_count} warehouses")
+        console.info(f"Synced to {success_count}/{total_count} warehouses")
     
     return results
 

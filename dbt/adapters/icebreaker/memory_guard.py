@@ -28,8 +28,8 @@ class MemoryEstimate:
     details: str
     
     def __str__(self) -> str:
-        icon = "✅" if self.safe_to_run else "⚠️"
-        return f"{icon} Need ~{self.estimated_gb:.1f}GB, have {self.available_gb:.1f}GB ({self.complexity})"
+        status = "OK" if self.safe_to_run else "WARN"
+        return f"[{status}] Need ~{self.estimated_gb:.1f}GB, have {self.available_gb:.1f}GB ({self.complexity})"
 
 
 class MemoryGuard:
@@ -344,14 +344,14 @@ class PreFlightChecker:
     def format_warnings(self, warnings: List[PreFlightWarning]) -> str:
         """Format warnings for display."""
         if not warnings:
-            return "✅ All pre-flight checks passed"
+            return "All pre-flight checks passed"
         
         lines = ["Pre-flight checks:"]
         for w in warnings:
-            icon = {"BLOCKER": "🛑", "WARNING": "⚠️", "INFO": "ℹ️"}.get(w.level, "•")
-            lines.append(f"  {icon} [{w.category}] {w.message}")
+            marker = {"BLOCKER": "BLOCK", "WARNING": "WARN", "INFO": "INFO"}.get(w.level, "-")
+            lines.append(f"  [{marker}] [{w.category}] {w.message}")
             if w.recommendation:
-                lines.append(f"       → {w.recommendation}")
+                lines.append(f"       -> {w.recommendation}")
         
         return "\n".join(lines)
 

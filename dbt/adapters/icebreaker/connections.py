@@ -26,13 +26,19 @@ def _load_env_file():
                                 line = line[7:]
                             key, value = line.split('=', 1)
                             os.environ.setdefault(key.strip(), value.strip())
-                print(f"📁 Loaded environment from {env_path}")
+                pass  # env loaded (logged after console init)
                 return True
             except Exception:
                 pass
     return False
 
 _load_env_file()
+
+from dbt.adapters.icebreaker.console import console
+
+import logging
+# Suppress noisy Snowflake connector retry warnings (transient network hiccups)
+logging.getLogger("snowflake.connector.vendored.urllib3.connectionpool").setLevel(logging.ERROR)
 
 import duckdb
 from dbt.adapters.contracts.connection import (
@@ -257,7 +263,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                     self.get_motherduck_handle(credentials)
                 if self._shared_cloud_handle is not None:
                     self._current_engine = "cloud"
-                    print(f"🔄 Switched to CLOUD (MotherDuck)")
+                    console.step("Switched to CLOUD (MotherDuck)")
             elif '-- ICEBREAKER_ENGINE:local' in sql:
                 self._current_engine = "local"
             # Execute the SELECT 1 but don't need to switch handles yet
@@ -294,11 +300,11 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                     try:
                         self._shared_cloud_handle.execute(f"CREATE SCHEMA IF NOT EXISTS local_db.{schema_name}")
                         self._shared_cloud_handle.execute(f"CREATE OR REPLACE TABLE local_db.{table_ref} AS SELECT * FROM {table_ref}")
-                        print(f"✅ Synced {table_ref} → local_db")
+                        console.success(f"Synced {table_ref} -> local_db")
                     except Exception as e:
-                        print(f"⚠️ Sync failed: {e}")
+                        console.warn(f"Sync failed: {e}")
             else:
-                print(f"ℹ️  Local-only mode (no sync needed)")
+                console.debug("Local-only mode (no sync needed)")
             return self.get_thread_connection(), None
         
         # Skip incomplete DDL statements that would cause parser errors
@@ -318,7 +324,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             old_handle = connection.handle
             connection.handle = self._shared_cloud_handle
             if old_handle != self._shared_cloud_handle:
-                print(f"📍 Executing on CLOUD: {sql[:80]}...")
+                console.step(f"Executing on CLOUD: {sql[:80]}...")
         elif self._shared_local_handle is not None:
             # Use local DuckDB handle
             connection.handle = self._shared_local_handle
@@ -388,7 +394,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             return
         
         object_name = match.group(1)
-        print(f"🔄 Sync: detected CREATE for {object_name}")
+        console.step(f"Syncing {object_name} to Snowflake")
         
         # Skip if already synced
         if object_name.lower() in self._synced_objects:
@@ -421,7 +427,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             self._synced_objects.add(object_name.lower())
             
         except Exception as e:
-            print(f"⚠️ Sync failed for {object_name}: {e}")
+            console.warn(f"Sync failed for {object_name}: {e}")
     
     def _sync_view_as_table(self, view_name: str, snowflake_cursor) -> None:
         """Materialize a DuckDB view and upload to Snowflake as a table."""
@@ -431,7 +437,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             df = self._shared_local_handle.execute(f"SELECT * FROM {view_name}").fetchdf()
             
             if df.empty:
-                print(f"⚠️ View {view_name} is empty, skipping sync")
+                console.warn(f"{view_name} is empty, skipping sync")
                 return
             
             # Write to Snowflake using write_pandas
@@ -453,20 +459,21 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                 schema=schema.upper(),
                 auto_create_table=True,
                 overwrite=True,
+                use_logical_type=True,
             )
             
             if success:
-                print(f"☁️ Synced {view_name} → Snowflake ({nrows:,} rows)")
+                console.success(f"Synced {view_name} -> Snowflake ({nrows:,} rows)")
             else:
-                print(f"⚠️ Sync failed for {view_name}")
+                console.warn(f"Sync failed for {view_name}")
                 
         except Exception as e:
-            print(f"⚠️ Could not sync view {view_name}: {e}")
+            console.warn(f"Could not sync {view_name}: {e}")
     
     def _fallback_to_snowflake(self, sql, auto_begin, bindings, abridge_sql_log, error_reason, **kwargs):
         """Execute on Snowflake when local DuckDB execution fails."""
-        print(f"⚠️ Local execution failed: {error_reason[:80]}...")
-        print(f"☁️ Falling back to Snowflake...")
+        console.warn(f"Local execution failed: {error_reason[:80]}")
+        console.step("Falling back to Snowflake...")
         
         # Get Snowflake connection
         if self._snowflake_conn_instance is None:
@@ -490,12 +497,12 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                     schema_part = match.group(1)  # e.g., "_stg_halo"
                     try:
                         cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_part}")
-                        print(f"📁 Ensured schema exists: {schema_part}")
+                        console.debug(f"Ensured schema exists: {schema_part}")
                     except Exception as schema_err:
-                        print(f"⚠️ Could not create schema {schema_part}: {schema_err}")
+                        console.warn(f"Could not create schema {schema_part}: {schema_err}")
             
             cursor.execute(sql, bindings if bindings else None)
-            print(f"✅ Executed on Snowflake successfully")
+            console.success("Executed on Snowflake")
             
             # Return in expected format
             from dbt.adapters.contracts.connection import AdapterResponse
@@ -506,7 +513,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             connection = self.get_thread_connection()
             return connection, cursor
         except Exception as sf_error:
-            print(f"❌ Snowflake execution also failed: {sf_error}")
+            console.error(f"Snowflake execution also failed: {sf_error}")
             raise
     
     def rollback(self, connection):
@@ -552,7 +559,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                 sql_for_key = _re.sub(r'/\*.*?\*/', '', sql, count=1, flags=_re.DOTALL).strip()
                 sql_preview = sql_for_key[:80].replace('\n', ' ')
                 if sql_preview not in cls._transpilation_logged:
-                    print(f"🔄 Transpiled: {sql_preview}...")
+                    console.step(f"Transpiled: {sql_preview}")
                     cls._transpilation_logged.add(sql_preview)
                 return transpiled
             
@@ -627,10 +634,10 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                 from dbt.adapters.icebreaker.snowflake_helper import get_snowflake_connection
                 cls._snowflake_conn_instance = get_snowflake_connection()
                 if cls._snowflake_conn_instance:
-                    print("🔌 Auto-cache connected to Snowflake (key-pair auth)")
+                    console.success("Connected to Snowflake for source caching")
             
             if cls._snowflake_conn_instance is None:
-                print(f"⚠️ Cannot cache {schema}.{table}: No Snowflake connection")
+                console.warn(f"Cannot cache {schema}.{table}: No Snowflake connection")
                 return False
             
             # Get source cache instance
@@ -644,7 +651,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                 )
             
             # Try to cache the table
-            print(f"📥 Auto-caching {schema}.{table} from Snowflake...")
+            console.step(f"Caching {schema}.{table} from Snowflake")
             
             # Resolve actual database and schema from dbt manifest
             database, actual_schema = cls._resolve_source_from_manifest(schema, table)
@@ -657,14 +664,14 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             )
             
             if success:
-                print(f"   ✅ Cached {schema}.{table}")
+                console.success(f"Cached {schema}.{table}")
             else:
-                print(f"   ⚠️ Could not cache {schema}.{table}")
+                console.warn(f"Could not cache {schema}.{table}")
             
             return success
             
         except Exception as e:
-            print(f"   ❌ Failed to cache {schema}.{table}: {e}")
+            console.error(f"Failed to cache {schema}.{table}: {e}")
             return False
     
     # Cache for manifest sources
@@ -732,13 +739,13 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                             "schema": source_def.get("schema", "").upper(),
                         }
                     
-                    print(f"📄 Loaded {len(cls._manifest_sources)} sources from manifest")
+                    console.info(f"Loaded {len(cls._manifest_sources)} sources from manifest")
                     return
                     
                 except Exception as e:
-                    print(f"⚠️ Could not load manifest: {e}")
+                    console.warn(f"Could not load manifest: {e}")
         
-        print("⚠️ No manifest.json found - run 'dbt parse' first for auto source resolution")
+        console.warn("No manifest.json found — run 'dbt parse' first for auto source resolution")
     
     # Class-level shared connections (single connection shared by all threads)
     _shared_local_handle: Optional[duckdb.DuckDBPyConnection] = None
@@ -772,9 +779,8 @@ class IcebreakerConnectionManager(SQLConnectionManager):
         import dbt_common.events.types as events
         from dbt_common.events.functions import fire_event
         
-        icon = "🏠" if engine == "local" else "☁️"
         engine_label = "LOCAL" if engine == "local" else "CLOUD (MotherDuck)"
-        msg = f"{icon} Routing: {model_name} → {engine_label}"
+        msg = f"Routing: {model_name} -> {engine_label}"
         if reason:
             msg += f" ({reason})"
         
@@ -783,7 +789,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             fire_event(events.Note(msg=msg))
         except Exception:
             # Fallback to print if event system not available
-            print(msg)
+            console.info(msg)
     
     @classmethod
     def get_motherduck_handle(cls, credentials: IcebreakerCredentials) -> Optional[duckdb.DuckDBPyConnection]:
@@ -810,14 +816,14 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             except Exception as db_error:
                 # Database might not exist - try to create it
                 if "no database/share named" in str(db_error):
-                    print(f"📦 Creating MotherDuck database '{db_name}'...")
+                    console.step(f"Creating MotherDuck database '{db_name}'")
                     # Connect without a specific database to create it
                     temp_conn = duckdb.connect(f"md:?motherduck_token={token}")
                     temp_conn.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
                     temp_conn.close()
                     # Now connect to the new database
                     cls._shared_cloud_handle = duckdb.connect(connection_string)
-                    print(f"✅ Created MotherDuck database '{db_name}'")
+                    console.success(f"Created MotherDuck database '{db_name}'")
                 else:
                     raise db_error
             
@@ -827,9 +833,9 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             if cls._shared_local_handle is not None:
                 try:
                     cls._shared_local_handle.execute(f"ATTACH '{connection_string}' AS md_cloud")
-                    print("🔗 Attached MotherDuck to local DuckDB for cross-database sync")
+                    console.success("Attached MotherDuck to local DuckDB for sync")
                 except Exception as e:
-                    print(f"⚠️ Could not attach MotherDuck to local: {e}")
+                    console.warn(f"Could not attach MotherDuck to local: {e}")
             
             # Load extensions
             for ext in credentials._duckdb_extensions:
@@ -842,7 +848,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             return cls._shared_cloud_handle
         except Exception as e:
             # Log error but don't fail - fall back to local
-            print(f"⚠️ MotherDuck connection failed, using local only: {e}")
+            console.warn(f"MotherDuck connection failed, using local only: {e}")
             return None
     
     # Shared Snowflake connection
@@ -886,14 +892,14 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             connect_kwargs = {k: v for k, v in connect_kwargs.items() if v is not None}
             
             cls._shared_snowflake_handle = snowflake.connector.connect(**connect_kwargs)
-            print(f"✅ Connected to Snowflake: {credentials.account}")
+            console.success(f"Connected to Snowflake: {credentials.account}")
             return cls._shared_snowflake_handle
             
         except ImportError:
-            print("⚠️ snowflake-connector-python not installed. Run: pip install dbt-icebreaker[snowflake]")
+            console.warn("snowflake-connector-python not installed. Run: pip install dbt-icebreaker[snowflake]")
             return None
         except Exception as e:
-            print(f"⚠️ Snowflake connection failed: {e}")
+            console.warn(f"Snowflake connection failed: {e}")
             return None
     
     @classmethod
@@ -963,21 +969,21 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             handle.execute(attach_sql)
             
             cls._iceberg_catalog_attached = True
-            print(f"🧊 Connected to Iceberg catalog: {credentials.iceberg_catalog_url}")
+            console.success(f"Connected to Iceberg catalog: {credentials.iceberg_catalog_url}")
             
             # List available schemas/namespaces for visibility
             try:
                 result = handle.execute("SELECT * FROM iceberg_catalog.information_schema.schemata LIMIT 5").fetchall()
                 if result:
                     schemas = [row[1] for row in result]
-                    print(f"   📂 Available namespaces: {', '.join(schemas[:3])}...")
+                    console.info(f"Available namespaces: {', '.join(schemas[:3])}...")
             except Exception:
                 pass
             
             return True
             
         except Exception as e:
-            print(f"⚠️ Iceberg catalog connection failed: {e}")
+            console.warn(f"Iceberg catalog connection failed: {e}")
             return False
     
     # Thread lock for connection initialization
@@ -1047,12 +1053,12 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                             ).fetchone()
                             if result is None:
                                 cls._shared_cloud_handle.execute(f"ATTACH '{local_db_path}' AS local_db")
-                                print(f"🔗 Connected to MotherDuck with local_db attached for sync")
-                                print(f"   Local cache: {local_db_path}")
+                                console.success(f"Connected to MotherDuck with local_db attached")
+                                console.info(f"Local cache: {local_db_path}")
                             cls._local_db_attached = True
                         except Exception as e:
                             # Attachment failed, but connection still works
-                            print(f"⚠️ Could not attach local_db: {e}")
+                            console.warn(f"Could not attach local_db: {e}")
                     
                     cls._shared_local_handle = cls._shared_cloud_handle  # Same connection!
                     cls._sync_enabled = True  # Cross-db sync is available
@@ -1071,7 +1077,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                     return connection
                     
                 except Exception as e:
-                    print(f"⚠️ MotherDuck connection failed, using local only: {e}")
+                    console.warn(f"MotherDuck connection failed, using local only: {e}")
             
             # Fallback: Local-only mode
             if cls._shared_local_handle is None:

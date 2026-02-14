@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from enum import Enum
 
+from dbt.adapters.icebreaker.console import console
+
 
 # =============================================================================
 # Run Session Tracking
@@ -90,7 +92,7 @@ class RunSummary:
         
         # After run...
         summary.end_session()
-        print(summary.format_summary())
+        console.info(summary.format_summary())
     """
     
     def __init__(self, data_dir: Optional[str] = None):
@@ -175,24 +177,24 @@ class RunSummary:
         
         # Header
         lines.append("")
-        lines.append("═" * 60)
-        lines.append("🧊 ICEBREAKER RUN SUMMARY")
-        lines.append("═" * 60)
+        lines.append("=" * 60)
+        lines.append("ICEBREAKER RUN SUMMARY")
+        lines.append("=" * 60)
         lines.append("")
         
         # Stats overview
         local_pct = (s.local_count / max(len(s.models), 1)) * 100
-        lines.append(f"📊 Models: {len(s.models)} total")
-        lines.append(f"   🏠 Local (FREE):  {s.local_count} ({local_pct:.0f}%)")
-        lines.append(f"   ☁️  Cloud:         {s.cloud_count}")
-        lines.append(f"   ✅ Succeeded:     {s.success_count}")
+        lines.append(f"Models: {len(s.models)} total")
+        lines.append(f"  Local (FREE):  {s.local_count} ({local_pct:.0f}%)")
+        lines.append(f"  Cloud:         {s.cloud_count}")
+        lines.append(f"  Succeeded:     {s.success_count}")
         if s.error_count > 0:
-            lines.append(f"   ❌ Failed:        {s.error_count}")
+            lines.append(f"  Failed:        {s.error_count}")
         lines.append("")
         
         # Savings
-        lines.append(f"💰 Estimated Savings: ${s.total_savings:.2f}")
-        lines.append(f"⏱️  Total Duration:    {s.total_duration:.1f}s")
+        lines.append(f"Estimated Savings: ${s.total_savings:.2f}")
+        lines.append(f"Total Duration:    {s.total_duration:.1f}s")
         lines.append("")
         
         # Routing breakdown by reason
@@ -201,24 +203,23 @@ class RunSummary:
             reason_counts[m.reason] = reason_counts.get(m.reason, 0) + 1
         
         if reason_counts:
-            lines.append("📍 Routing Breakdown:")
+            lines.append("Routing Breakdown:")
             for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1]):
-                icon = "🏠" if "LOCAL" in reason or "AUTO" in reason or "CHEAP" in reason else "☁️"
-                lines.append(f"   {icon} {reason}: {count}")
+                lines.append(f"  {reason}: {count}")
             lines.append("")
         
         # Show errors if any
         errors = [m for m in s.models if not m.success]
         if errors:
-            lines.append("❌ Errors:")
+            lines.append("Errors:")
             for m in errors[:5]:  # Show max 5
-                lines.append(f"   • {m.name}: {m.error or 'Unknown error'}")
+                lines.append(f"  - {m.name}: {m.error or 'Unknown error'}")
             if len(errors) > 5:
-                lines.append(f"   ... and {len(errors) - 5} more")
+                lines.append(f"  ... and {len(errors) - 5} more")
             lines.append("")
         
         # Footer
-        lines.append("═" * 60)
+        lines.append("=" * 60)
         lines.append("Run 'icebreaker savings' for detailed cost analysis")
         lines.append("")
         
@@ -254,4 +255,4 @@ def get_run_summary() -> RunSummary:
 def print_run_summary():
     """Print the run summary (call after dbt run)."""
     summary = get_run_summary()
-    print(summary.format_summary())
+    console.info(summary.format_summary())

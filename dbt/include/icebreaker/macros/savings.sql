@@ -46,11 +46,11 @@
             
             {# Display savings with appropriate precision #}
             {% if savings >= 0.01 %}
-                {{ log("💰 Saved ~$" ~ (savings | round(2)) ~ " by running locally", info=True) }}
+                {{ log("Saved ~$" ~ (savings | round(2)) ~ " by running locally", info=True) }}
             {% elif savings >= 0.001 %}
-                {{ log("💰 Saved ~$" ~ (savings | round(3)) ~ " by running locally", info=True) }}
+                {{ log("Saved ~$" ~ (savings | round(3)) ~ " by running locally", info=True) }}
             {% elif savings > 0 %}
-                {{ log("💰 Saved ~$" ~ (savings | round(4)) ~ " by running locally", info=True) }}
+                {{ log("Saved ~$" ~ (savings | round(4)) ~ " by running locally", info=True) }}
             {% endif %}
         {% else %}
             {% set savings = 0 %}

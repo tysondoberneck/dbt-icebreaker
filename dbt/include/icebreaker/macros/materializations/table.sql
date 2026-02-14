@@ -37,9 +37,9 @@
     
     {# Log routing decision #}
     {% if is_cloud %}
-        {{ log("☁️  " ~ identifier ~ " → CLOUD (" ~ reason ~ ")", info=True) }}
+        {{ log(identifier ~ " -> CLOUD (" ~ reason ~ ")", info=True) }}
     {% else %}
-        {{ log("🏠 " ~ identifier ~ " → LOCAL (" ~ reason ~ ")", info=True) }}
+        {{ log(identifier ~ " -> LOCAL (" ~ reason ~ ")", info=True) }}
     {% endif %}
     
     {{ run_hooks(pre_hooks) }}
@@ -85,7 +85,7 @@
     SYNC to all engines: Use -- ICEBREAKER_SYNC comment to trigger sync.
     The connection manager handles retry and verification.
     #}
-    {{ log("🔄 Syncing " ~ identifier ~ " to all engines...", info=True) }}
+    {{ log("Syncing " ~ identifier ~ " to all engines...", info=True) }}
     {% call statement('sync') %}
         -- ICEBREAKER_SYNC:{{ schema }}.{{ identifier }}
         SELECT 1

@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 
+from dbt.adapters.icebreaker.console import console
+
 
 # =============================================================================
 # Configuration
@@ -180,10 +182,10 @@ class SourceCache:
         
         # Check if already cached and fresh
         if not force and self.is_cached(database, schema, table):
-            print(f"📦 Using cached: {table_id}")
+            console.info(f"Using cached: {table_id}")
             return self._manifest[table_id]
         
-        print(f"⬇️  Downloading: {table_id}...")
+        console.step(f"Downloading: {table_id}")
         start_time = time.time()
         
         parquet_path = self.get_parquet_path(table_id)
@@ -208,7 +210,7 @@ class SourceCache:
         self._manifest[table_id] = entry
         self._save_manifest()
         
-        print(f"✅ Cached {table_id}: {row_count:,} rows, {entry.size_gb:.2f}GB in {elapsed:.1f}s")
+        console.success(f"Cached {table_id}: {row_count:,} rows, {entry.size_gb:.2f}GB in {elapsed:.1f}s")
         
         return entry
     
@@ -242,10 +244,10 @@ class SourceCache:
             rows = cursor.fetchall()
             variant_cols = [row[0] for row in rows]
             if variant_cols:
-                print(f"   🔄 Detected {len(variant_cols)} VARIANT/OBJECT/ARRAY column(s): {', '.join(variant_cols)}")
+                console.info(f"Detected {len(variant_cols)} VARIANT column(s): {', '.join(variant_cols)}")
             return variant_cols
         except Exception as e:
-            print(f"   ⚠️ Could not detect VARIANT columns: {e}")
+            console.warn(f"Could not detect VARIANT columns: {e}")
             return []
     
     def _build_select_with_variant_cast(
@@ -378,7 +380,7 @@ class SourceCache:
             return True
             
         except Exception as e:
-            print(f"⚠️ Failed to register {schema}.{table}: {e}")
+            console.warn(f"Failed to register {schema}.{table}: {e}")
             return False
     
     def ensure_cached(
@@ -405,7 +407,7 @@ class SourceCache:
             try:
                 self.cache_table(database, schema, table)
             except Exception as e:
-                print(f"⚠️ Failed to cache {database}.{schema}.{table}: {e}")
+                console.warn(f"Failed to cache {database}.{schema}.{table}: {e}")
                 return False
         
         # Register in DuckDB
@@ -425,7 +427,7 @@ class SourceCache:
                 try:
                     self.cache_table(database, schema, table, force=force)
                 except Exception as e:
-                    print(f"⚠️ Failed to refresh {table_id}: {e}")
+                    console.warn(f"Failed to refresh {table_id}: {e}")
     
     def clear(self):
         """Clear all cached data."""
@@ -438,7 +440,7 @@ class SourceCache:
         
         self._manifest = {}
         self._save_manifest()
-        print("🗑️  Cache cleared")
+        console.info("Cache cleared")
     
     def get_status(self) -> Dict[str, Any]:
         """Get cache status summary."""
@@ -530,8 +532,8 @@ def get_source_cache(
 def format_cache_status(status: Dict[str, Any]) -> str:
     """Format cache status as a nice report."""
     lines = [
-        "📦 Icebreaker Source Cache",
-        "═" * 50,
+        "Icebreaker Source Cache",
+        "─" * 40,
         f"  Location: {status['cache_dir']}",
         f"  Tables:   {status['table_count']} cached ({status['stale_count']} stale)",
         f"  Size:     {status['total_size_gb']:.2f}GB / {status['max_size_gb']:.1f}GB max",
@@ -542,9 +544,9 @@ def format_cache_status(status: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("  Cached Tables:")
         for entry in status['entries']:
-            stale_marker = "⚠️ " if entry['stale'] else "✅"
+            marker = "stale" if entry['stale'] else "ok"
             lines.append(
-                f"    {stale_marker} {entry['table_id']}: "
+                f"    [{marker}] {entry['table_id']}: "
                 f"{entry['size_gb']:.2f}GB, {entry['age_hours']}h old"
             )
     else:
@@ -552,5 +554,5 @@ def format_cache_status(status: Dict[str, Any]) -> str:
         lines.append("  No tables cached yet.")
         lines.append("  Tables will be cached on first `dbt run`.")
     
-    lines.append("═" * 50)
+    lines.append("─" * 40)
     return "\n".join(lines)

@@ -24,14 +24,14 @@ class IcebreakerError(Exception):
     
     def format(self) -> str:
         """Format error with suggestion and docs link."""
-        lines = [f"❌ {self.message}"]
+        lines = [f"Error: {self.message}"]
         
         if self.suggestion:
             lines.append("")
-            lines.append(f"💡 Suggestion: {self.suggestion}")
+            lines.append(f"Suggestion: {self.suggestion}")
         
         if self.docs_url:
-            lines.append(f"📖 Docs: {self.docs_url}")
+            lines.append(f"Docs: {self.docs_url}")
         
         return "\n".join(lines)
 

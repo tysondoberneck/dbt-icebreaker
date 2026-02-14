@@ -21,8 +21,8 @@ class HealthCheckResult:
     details: Optional[Dict] = None
     
     def __str__(self) -> str:
-        icon = {"OK": "✅", "WARNING": "⚠️", "ERROR": "❌"}.get(self.status, "•")
-        return f"{icon} {self.check_name}: {self.message}"
+        marker = {"OK": "[OK]", "WARNING": "[WARN]", "ERROR": "[ERR]"}.get(self.status, "[-]")
+        return f"{marker} {self.check_name}: {self.message}"
 
 
 @dataclass 
@@ -346,8 +346,8 @@ def format_health_report(report: HealthReport) -> str:
     """Format health report for display."""
     lines = [
         "",
-        "🏥 ICEBREAKER HEALTH CHECK",
-        "═" * 50,
+        "ICEBREAKER HEALTH CHECK",
+        "=" * 50,
         f"   Timestamp: {report.timestamp[:19]}",
         f"   Status: {report.overall_status}",
         "",
@@ -359,7 +359,7 @@ def format_health_report(report: HealthReport) -> str:
     lines.extend([
         "",
         f"   Summary: {report.ok_count} OK, {report.warning_count} warnings, {report.error_count} errors",
-        "═" * 50,
+        "=" * 50,
         "",
     ])
     

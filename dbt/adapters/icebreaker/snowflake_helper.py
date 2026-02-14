@@ -10,6 +10,8 @@ import os
 import yaml
 from typing import Any, Dict, Optional
 
+from dbt.adapters.icebreaker.console import console
+
 
 def find_icebreaker_profile() -> Optional[Dict[str, Any]]:
     """
@@ -67,7 +69,7 @@ def find_icebreaker_profile() -> Optional[Dict[str, Any]]:
                             return target_config
                 
             except Exception as e:
-                print(f"⚠️ Could not read profiles from {path}: {e}")
+                console.warn(f"Could not read profiles from {path}: {e}")
                 continue
     
     return None
@@ -87,17 +89,17 @@ def get_snowflake_connection() -> Optional[Any]:
     try:
         import snowflake.connector
     except ImportError:
-        print("⚠️ snowflake-connector-python not installed. Run: pip install snowflake-connector-python")
+        console.warn("snowflake-connector-python not installed. Run: pip install snowflake-connector-python")
         return None
     
     profile = find_icebreaker_profile()
     if not profile:
-        print("⚠️ No icebreaker profile found in profiles.yml")
+        console.warn("No icebreaker profile found in profiles.yml")
         return None
     
     account = profile.get("account")
     if not account:
-        print("⚠️ No Snowflake account configured in icebreaker profile")
+        console.warn("No Snowflake account configured in icebreaker profile")
         return None
     
     connect_kwargs: Dict[str, Any] = {
@@ -154,19 +156,19 @@ def get_snowflake_connection() -> Optional[Any]:
             )
             connect_kwargs["private_key"] = pkb
         except Exception as e:
-            print(f"⚠️ Could not load private key from {private_key_path}: {e}")
+            console.warn(f"Could not load private key from {private_key_path}: {e}")
             return None
     elif password:
         connect_kwargs["password"] = password
     elif authenticator:
         connect_kwargs["authenticator"] = authenticator
     else:
-        print("⚠️ No Snowflake auth method found (need private_key_path, password, or authenticator)")
+        console.warn("No Snowflake auth method found (need private_key_path, password, or authenticator)")
         return None
     
     try:
         conn = snowflake.connector.connect(**connect_kwargs)
         return conn
     except Exception as e:
-        print(f"⚠️ Snowflake connection failed: {e}")
+        console.warn(f"Snowflake connection failed: {e}")
         return None

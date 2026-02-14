@@ -112,7 +112,7 @@
     {%- set total = local_count + cloud_count -%}
     {%- set savings_pct = (local_count / total * 100) if total > 0 else 0 -%}
     
-    {{ log("💰 Icebreaker Savings: " ~ local_count ~ "/" ~ total ~ " models ran locally (" ~ savings_pct|round(1) ~ "% free)", info=True) }}
+    {{ log("Icebreaker Savings: " ~ local_count ~ "/" ~ total ~ " models ran locally (" ~ savings_pct|round(1) ~ "% free)", info=True) }}
 {% endmacro %}
 
 {# Override load_csv_rows to use DuckDB-compatible INSERT syntax #}

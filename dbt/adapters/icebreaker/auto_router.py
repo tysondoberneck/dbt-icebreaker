@@ -46,9 +46,9 @@ class RoutingDecision:
     confidence: float = 1.0  # 0-1 confidence in decision
     
     def __str__(self) -> str:
-        icon = "☁️" if self.venue == "CLOUD" else "🏠"
+        label = "CLOUD" if self.venue == "CLOUD" else "LOCAL"
         detail_str = f" ({self.details})" if self.details else ""
-        return f"{icon} {self.venue}: {self.reason.value}{detail_str}"
+        return f"{label}: {self.reason.value}{detail_str}"
 
 
 # =============================================================================

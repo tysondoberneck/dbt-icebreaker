@@ -292,4 +292,4 @@ class TestRoutingDecision:
         
         result = str(decision)
         assert "LOCAL" in result
-        assert "🏠" in result
+        assert "LOCAL" in result

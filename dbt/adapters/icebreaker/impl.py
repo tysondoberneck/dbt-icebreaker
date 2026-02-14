@@ -24,6 +24,7 @@ from dbt.adapters.icebreaker.transpiler import Transpiler, TranspilationError
 from dbt.adapters.icebreaker.savings import log_execution
 from dbt.adapters.icebreaker.auto_router import AutoRouter, RoutingDecision, get_router
 from dbt.adapters.icebreaker.catalog_scanner import CatalogScanner, get_catalog_scanner
+from dbt.adapters.icebreaker.console import console
 
 
 class IcebreakerAdapter(SQLAdapter):
@@ -287,7 +288,7 @@ class IcebreakerAdapter(SQLAdapter):
                 cloud_type=cloud_type,
             )
             if execution.savings > 0.01:  # Only show if meaningful
-                print(f"💰 Saved ${execution.savings:.2f} by running locally")
+                console.success(f"Saved ${execution.savings:.2f} by running locally")
         except Exception:
             pass  # Don't fail the query if logging fails
         
