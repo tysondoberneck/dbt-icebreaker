@@ -2,8 +2,6 @@
 Tests for the Connection Manager module.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
 
 
 class TestIcebreakerCredentials:

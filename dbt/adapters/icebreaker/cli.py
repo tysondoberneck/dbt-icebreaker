@@ -6,7 +6,6 @@ Command-line utilities for the Icebreaker adapter.
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 from dbt.adapters.icebreaker.console import console
@@ -333,7 +332,7 @@ def cmd_sync(args):
         
         console.step(f"Syncing {len(tables)} table(s) to Snowflake...")
         
-        from dbt.adapters.icebreaker.warehouse_sync import sync_to_snowflake
+        from dbt.adapters.icebreaker.sync_manager import SyncManager
         
         # Get Snowflake connection
         try:
@@ -349,6 +348,8 @@ def cmd_sync(args):
             console.error(f"Failed to connect to Snowflake: {e}")
             return
         
+        sync_mgr = SyncManager(local_conn=conn, cloud_conn=sf_conn)
+        
         success = 0
         failed = 0
         
@@ -359,16 +360,12 @@ def cmd_sync(args):
             else:
                 schema, table_name = "main", parts[0]
             
-            try:
-                result = sync_to_snowflake(conn, sf_conn, schema, table_name)
-                if result.success:
-                    success += 1
-                else:
-                    failed += 1
-                    console.error(f"{table}: {result.error}")
-            except Exception as e:
+            result = sync_mgr.sync_table(schema, table_name)
+            if result.success:
+                success += 1
+            else:
                 failed += 1
-                console.error(f"{table}: {e}")
+                console.error(f"{table}: {result.error}")
         
         console.success(f"Synced: {success}, Failed: {failed}")
         
@@ -494,7 +491,7 @@ def cmd_verify(args):
 def cmd_explain(input_str: str):
     """Explain routing decision for SQL."""
     from dbt.adapters.icebreaker.auto_router import AutoRouter
-    from dbt.adapters.icebreaker.memory_guard import MemoryGuard, PreFlightChecker
+    from dbt.adapters.icebreaker.memory_guard import PreFlightChecker
     
     console.panel("Routing Explanation", title="Explain")
     

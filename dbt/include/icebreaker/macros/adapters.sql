@@ -1,8 +1,19 @@
 {#
-    Icebreaker Adapter Properties
+    Schema name generation for Icebreaker adapter.
     
-    These macros define adapter-specific behavior for dbt.
+    Uses the profile's schema (e.g. 'dbt_tdoberneck') as the target schema prefix
+    combined with the custom schema name from dbt_project.yml.
+    
+    Result: dbt_tdoberneck + stg_halo -> dbt_tdoberneck_stg_halo
 #}
+{% macro icebreaker__generate_schema_name(custom_schema_name, node) -%}
+    {%- set default_schema = target.schema -%}
+    {%- if custom_schema_name is none -%}
+        {{ default_schema }}
+    {%- else -%}
+        {{ default_schema }}_{{ custom_schema_name | trim }}
+    {%- endif -%}
+{%- endmacro %}
 
 {% macro icebreaker__create_schema(relation) %}
     {%- set schema_name = relation.schema | default(relation.without_identifier().schema, true) -%}

@@ -28,8 +28,8 @@ def _load_env_file():
                             os.environ.setdefault(key.strip(), value.strip())
                 pass  # env loaded (logged after console init)
                 return True
-            except Exception:
-                pass
+            except Exception as e:
+                console.debug(f"Could not load .env file: {e}")
     return False
 
 _load_env_file()
@@ -171,6 +171,8 @@ class IcebreakerCredentials(Credentials):
             "cloud_type",
             "engine",
             "threads",
+            "database",
+            "schema",
             "account",  # Snowflake
             "project",  # BigQuery
             "cloud_bridge_type",
@@ -371,9 +373,60 @@ class IcebreakerConnectionManager(SQLConnectionManager):
     # Sync configuration
     _sync_to_snowflake: bool = True  # Enable by default
     _synced_objects: set = set()  # Track synced objects to avoid duplicates
+    _created_schemas: set = set()  # Track schemas already created in Snowflake
     
+    def _resolve_snowflake_schema(self, duckdb_schema: str) -> str:
+        """Map a DuckDB local schema name to the correct Snowflake schema.
+        
+        Handles two cases:
+        1. Schema already has target prefix (e.g., 'dbt_tdoberneck_stg_halo') -> passthrough
+        2. Legacy underscore-prefixed schemas (e.g., '_stg_halo') -> prefix with target
+        
+        Uses the same convention as dbt's default generate_schema_name:
+            {target_schema}_{custom_schema}
+        """
+        # Get the target schema from profile credentials (e.g., 'dbt_tdoberneck')
+        try:
+            target_schema = self.profile.credentials.schema
+        except Exception:
+            target_schema = None
+        
+        if not target_schema or target_schema == "main":
+            return duckdb_schema
+        
+        # If schema already starts with the target prefix, it's already resolved
+        if duckdb_schema.startswith(target_schema):
+            return duckdb_schema
+        
+        # Legacy: strip leading underscore from DuckDB schema name
+        # DuckDB schemas used to come in as '_stg_halo', '_marts_obie', etc.
+        custom_schema = duckdb_schema.lstrip('_')
+        
+        if not custom_schema:
+            return target_schema
+        
+        # Combine: dbt_tdoberneck + stg_halo -> dbt_tdoberneck_stg_halo
+        return f"{target_schema}_{custom_schema}"
+    
+    def _resolve_snowflake_object_name(self, duckdb_object: str) -> str:
+        """Resolve a full DuckDB object name (schema.table) to Snowflake naming.
+        
+        Example: '_marts_obie.obie_branded_claims' -> 'dbt_tdoberneck_marts_obie.obie_branded_claims'
+        """
+        parts = duckdb_object.split('.')
+        if len(parts) == 2:
+            sf_schema = self._resolve_snowflake_schema(parts[0])
+            return f"{sf_schema}.{parts[1]}"
+        return duckdb_object
+
     def _sync_to_snowflake_if_enabled(self, sql: str) -> None:
-        """Sync DDL results to Snowflake after local execution."""
+        """Sync DDL results to Snowflake after local execution.
+        
+        Only syncs CREATE TABLE (materialized models). Skips CREATE VIEW
+        (staging models) since those are just SELECT * from source tables
+        that already exist in Snowflake — syncing them back is a pointless
+        round-trip.
+        """
         if not self._sync_to_snowflake:
             return
         
@@ -384,17 +437,23 @@ class IcebreakerConnectionManager(SQLConnectionManager):
         sql_no_comments = re.sub(r'/\*.*?\*/', '', sql_stripped, flags=re.DOTALL).strip()
         sql_upper = sql_no_comments.upper()
         
-        # Only sync CREATE VIEW/TABLE statements
+        # Only sync CREATE TABLE statements (materialized models)
+        # Skip CREATE VIEW — staging views reference sources already in Snowflake
         if not sql_upper.startswith("CREATE"):
             return
         
+        is_view = bool(re.match(r'CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\b', sql_no_comments, re.IGNORECASE))
+        if is_view:
+            return
+        
         # Extract the object being created (schema.table_name)
-        match = re.search(r'CREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TABLE)\s+(\S+)', sql_no_comments, re.IGNORECASE)
+        match = re.search(r'CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE)\s+(\S+)', sql_no_comments, re.IGNORECASE)
         if not match:
             return
         
-        object_name = match.group(1)
-        console.step(f"Syncing {object_name} to Snowflake")
+        object_name = match.group(1)  # DuckDB name, e.g. '_marts_obie.obie_claims'
+        sf_object_name = self._resolve_snowflake_object_name(object_name)
+        console.step(f"Syncing {object_name} -> {sf_object_name}")
         
         # Skip if already synced
         if object_name.lower() in self._synced_objects:
@@ -411,64 +470,70 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             
             cursor = self._snowflake_conn_instance.cursor()
             
-            # Ensure schema exists
-            schema_name = object_name.split('.')[0] if '.' in object_name else None
-            if schema_name:
+            # Ensure resolved Snowflake schema exists
+            sf_schema = sf_object_name.split('.')[0] if '.' in sf_object_name else None
+            if sf_schema and sf_schema.lower() not in self._created_schemas:
                 try:
-                    cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
-                except Exception:
-                    pass
+                    cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {sf_schema}")
+                    self._created_schemas.add(sf_schema.lower())
+                except Exception as e:
+                    console.debug(f"Could not create schema {sf_schema}: {e}")
             
-            # For both views and tables, materialize from DuckDB and upload
-            # via write_pandas. Replaying DDL doesn't work because transpiled
-            # DuckDB SQL uses unquoted lowercase identifiers that Snowflake rejects.
-            self._sync_view_as_table(object_name, cursor)
+            # Materialize from DuckDB (using local name) and upload to Snowflake (using resolved name)
+            self._sync_view_as_table(object_name, sf_object_name, cursor)
             
             self._synced_objects.add(object_name.lower())
             
         except Exception as e:
-            console.warn(f"Sync failed for {object_name}: {e}")
+            console.warn(f"Sync failed for {sf_object_name}: {e}")
     
-    def _sync_view_as_table(self, view_name: str, snowflake_cursor) -> None:
-        """Materialize a DuckDB view and upload to Snowflake as a table."""
+    def _sync_view_as_table(self, duckdb_name: str, sf_name: str, snowflake_cursor) -> None:
+        """Materialize a DuckDB view and upload to Snowflake as a table.
+        
+        Args:
+            duckdb_name: Local DuckDB object name (e.g. '_marts_obie.obie_claims')
+            sf_name: Resolved Snowflake object name (e.g. 'dbt_tdoberneck_marts_obie.obie_claims')
+            snowflake_cursor: Active Snowflake cursor
+        """
         try:
-            # Query the view from DuckDB
-            import pandas as pd
-            df = self._shared_local_handle.execute(f"SELECT * FROM {view_name}").fetchdf()
+            # Query the view from DuckDB using local name
+            df = self._shared_local_handle.execute(f"SELECT * FROM {duckdb_name}").fetchdf()
             
             if df.empty:
-                console.warn(f"{view_name} is empty, skipping sync")
+                console.warn(f"{duckdb_name} is empty, skipping sync")
                 return
             
             # Write to Snowflake using write_pandas
             from snowflake.connector.pandas_tools import write_pandas
             
-            # Parse schema and table name
-            parts = view_name.split('.')
+            # Parse resolved Snowflake schema and table name
+            parts = sf_name.split('.')
             if len(parts) == 2:
                 schema, table = parts
             else:
                 schema = "PUBLIC"
-                table = view_name
+                table = sf_name
             
-            # Upload to Snowflake
-            success, nchunks, nrows, _ = write_pandas(
-                conn=self._snowflake_conn_instance,
-                df=df,
-                table_name=table.upper(),
-                schema=schema.upper(),
-                auto_create_table=True,
-                overwrite=True,
-                use_logical_type=True,
-            )
+            # Upload to Snowflake using resolved names
+            row_count = len(df)
+            with console.spinning(f"Syncing {table.upper()} to Snowflake ({row_count:,} rows)..."):
+                success, nchunks, nrows, _ = write_pandas(
+                    conn=self._snowflake_conn_instance,
+                    df=df,
+                    table_name=table.upper(),
+                    schema=schema.upper(),
+                    auto_create_table=True,
+                    overwrite=True,
+                    use_logical_type=True,
+                )
             
             if success:
-                console.success(f"Synced {view_name} -> Snowflake ({nrows:,} rows)")
+                console.success(f"Synced {duckdb_name} -> Snowflake {schema.upper()}.{table.upper()} ({nrows:,} rows)")
             else:
-                console.warn(f"Sync failed for {view_name}")
+                console.warn(f"Sync failed for {sf_name}")
                 
         except Exception as e:
-            console.warn(f"Could not sync {view_name}: {e}")
+            console.warn(f"Could not sync {sf_name}: {e}")
     
     def _fallback_to_snowflake(self, sql, auto_begin, bindings, abridge_sql_log, error_reason, **kwargs):
         """Execute on Snowflake when local DuckDB execution fails."""
@@ -495,11 +560,14 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                 match = re.search(r'CREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TABLE)\s+(\S+)\.', sql_stripped, re.IGNORECASE)
                 if match:
                     schema_part = match.group(1)  # e.g., "_stg_halo"
-                    try:
-                        cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_part}")
-                        console.debug(f"Ensured schema exists: {schema_part}")
-                    except Exception as schema_err:
-                        console.warn(f"Could not create schema {schema_part}: {schema_err}")
+                    resolved_schema = self._resolve_snowflake_schema(schema_part)
+                    if resolved_schema.lower() not in self._created_schemas:
+                        try:
+                            cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {resolved_schema}")
+                            self._created_schemas.add(resolved_schema.lower())
+                            console.debug(f"Ensured schema exists: {resolved_schema}")
+                        except Exception as schema_err:
+                            console.warn(f"Could not create schema {resolved_schema}: {schema_err}")
             
             cursor.execute(sql, bindings if bindings else None)
             console.success("Executed on Snowflake")
@@ -546,7 +614,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
             return sql
         
         try:
-            from dbt.adapters.icebreaker.transpiler import Transpiler, TranspilationError
+            from dbt.adapters.icebreaker.transpiler import Transpiler
             
             transpiler = Transpiler(source_dialect="snowflake")
             transpiled = transpiler.to_duckdb(sql)
@@ -651,7 +719,7 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                 )
             
             # Try to cache the table
-            console.step(f"Caching {schema}.{table} from Snowflake")
+            console.info(f"Caching {schema}.{table} from Snowflake")
             
             # Resolve actual database and schema from dbt manifest
             database, actual_schema = cls._resolve_source_from_manifest(schema, table)
@@ -842,8 +910,8 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                 try:
                     cls._shared_cloud_handle.execute(f"INSTALL {ext}")
                     cls._shared_cloud_handle.execute(f"LOAD {ext}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    console.debug(f"Extension {ext} not available: {e}")
             
             return cls._shared_cloud_handle
         except Exception as e:
@@ -977,8 +1045,8 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                 if result:
                     schemas = [row[1] for row in result]
                     console.info(f"Available namespaces: {', '.join(schemas[:3])}...")
-            except Exception:
-                pass
+            except Exception as e:
+                console.debug(f"Could not list Iceberg namespaces: {e}")
             
             return True
             
@@ -1034,8 +1102,8 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                     if cls._shared_cloud_handle is not None:
                         try:
                             cls._shared_cloud_handle.close()
-                        except:
-                            pass
+                        except Exception as e:
+                            console.debug(f"Could not close cloud handle: {e}")
                         cls._local_db_attached = False
                     
                     cls._shared_cloud_handle = duckdb.connect(connection_string)
@@ -1068,8 +1136,8 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                         try:
                             cls._shared_cloud_handle.execute(f"INSTALL {ext}")
                             cls._shared_cloud_handle.execute(f"LOAD {ext}")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            console.debug(f"Extension {ext} not available: {e}")
                     
                     connection.state = ConnectionState.OPEN
                     connection.handle = cls._shared_cloud_handle
@@ -1088,8 +1156,8 @@ class IcebreakerConnectionManager(SQLConnectionManager):
                     try:
                         cls._shared_local_handle.execute(f"INSTALL {ext}")
                         cls._shared_local_handle.execute(f"LOAD {ext}")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        console.debug(f"Extension {ext} not available: {e}")
             
             connection.state = ConnectionState.OPEN
             connection.handle = cls._shared_local_handle

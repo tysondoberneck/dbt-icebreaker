@@ -14,43 +14,16 @@ Gates:
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Set
-from enum import Enum
+from typing import Any, Dict, List, Optional
 import os
 import json
 from pathlib import Path
 
 from dbt.adapters.icebreaker.transpiler import Transpiler
-
-
-VenueType = Literal["LOCAL", "CLOUD"]
-
-
-class RoutingReason(Enum):
-    """Reasons for routing decisions."""
-    USER_OVERRIDE = "User configured icebreaker_route"
-    VIEW_DEPENDENCY = "Depends on cloud-only views"
-    INTERNAL_SOURCE = "Uses internal/proprietary sources"
-    UNTRANSPILABLE = "SQL contains untranspilable syntax"
-    TOXIC_TYPES = "Contains incompatible data types"
-    CRASH_HISTORY = "Previously crashed local execution"
-    HIGH_COMPLEXITY = "Historical runtime exceeds threshold"
-    LARGE_VOLUME = "Data volume exceeds local threshold"
-    DEFAULT_LOCAL = "Passed all gates - running locally (free!)"
-
-
-@dataclass
-class RoutingDecision:
-    """Result of a routing decision."""
-    venue: VenueType
-    reason: RoutingReason
-    details: Optional[str] = None
-    gate: Optional[int] = None
-    
-    def __str__(self) -> str:
-        gate_str = f"Gate {self.gate}: " if self.gate else ""
-        detail_str = f" ({self.details})" if self.details else ""
-        return f"{self.venue} - {gate_str}{self.reason.value}{detail_str}"
+from dbt.adapters.icebreaker.auto_router import (
+    RoutingReason,
+    RoutingDecision,
+)
 
 
 @dataclass
@@ -100,7 +73,7 @@ class TrafficController:
             if stats_file.exists():
                 try:
                     self._cloud_stats = json.loads(stats_file.read_text())
-                except:
+                except (json.JSONDecodeError, OSError):
                     self._cloud_stats = {}
             else:
                 self._cloud_stats = {}
@@ -114,7 +87,7 @@ class TrafficController:
             if state_file.exists():
                 try:
                     self._local_state = json.loads(state_file.read_text())
-                except:
+                except (json.JSONDecodeError, OSError):
                     self._local_state = {}
             else:
                 self._local_state = {}

@@ -5,10 +5,9 @@ Prevents OOM crashes by estimating query memory requirements
 and routing to cloud when local memory is insufficient.
 """
 
-import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 # Try to import psutil for system memory info
 try:

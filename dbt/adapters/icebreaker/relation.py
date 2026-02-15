@@ -5,10 +5,9 @@ Handles DuckDB relations without database prefix (DuckDB uses schema.table only)
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from dbt.adapters.base.relation import BaseRelation
-from dbt.adapters.contracts.relation import RelationType, Policy
+from dbt.adapters.contracts.relation import Policy
 
 
 @dataclass

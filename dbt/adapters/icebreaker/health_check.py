@@ -6,10 +6,11 @@ Compares local state vs cloud state to detect drift and ensure data consistency.
 
 import os
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from dbt.adapters.icebreaker.console import console
 
 
 @dataclass
@@ -162,8 +163,8 @@ class HealthChecker:
                         age_hours = (datetime.now() - created_dt).total_seconds() / 3600
                         if age_hours > 24:
                             stale_count += 1
-                    except:
-                        pass
+                    except Exception as e:
+                        console.debug(f"Could not parse cache timestamp: {e}")
             
             status = "WARNING" if stale_count > 0 else "OK"
             msg = f"{table_count} tables cached ({size_gb:.1f}GB)"
@@ -330,14 +331,14 @@ class HealthChecker:
                             "diff": diff,
                             "diff_pct": (diff / max(local_count, 1)) * 100,
                         })
-                except:
+                except Exception:
                     pass  # Table might not exist in one or the other
             
             local_conn.close()
             sf_cursor.close()
             
-        except Exception:
-            pass
+        except Exception as e:
+            console.debug(f"Drift detection failed: {e}")
         
         return drift
 

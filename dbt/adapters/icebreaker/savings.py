@@ -10,7 +10,6 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import Optional, List
 
 from dbt.adapters.icebreaker.console import console
 

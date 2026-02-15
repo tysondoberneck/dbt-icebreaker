@@ -11,7 +11,6 @@ Supports:
 """
 
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -100,7 +99,7 @@ class MetadataHarvester:
             last_fetch = datetime.fromisoformat(fetched_at)
             age = datetime.now() - last_fetch
             return age > timedelta(hours=self.config.cache_ttl_hours)
-        except:
+        except (ValueError, TypeError):
             return True
     
     # =========================================================================

@@ -45,8 +45,7 @@ htmlcov/
 .user.yml
 
 # Agent skills (local only)
-.agent/
-.skills/
+
 
 # Sample project (for local testing only)
 sample-dbt-project/

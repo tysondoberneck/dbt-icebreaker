@@ -7,7 +7,6 @@ from dbt.adapters.icebreaker.auto_router import (
     AutoRouter,
     RoutingDecision,
     RoutingReason,
-    CLOUD_ONLY_FUNCTIONS,
 )
 
 

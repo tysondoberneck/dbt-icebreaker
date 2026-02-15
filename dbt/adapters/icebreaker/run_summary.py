@@ -10,8 +10,7 @@ import json
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from enum import Enum
+from typing import Dict, List, Optional
 
 from dbt.adapters.icebreaker.console import console
 
@@ -232,9 +231,8 @@ class RunSummary:
             if files:
                 with open(files[0], 'r') as f:
                     return json.load(f)
-        except Exception:
-            pass
-        return None
+        except Exception as e:
+            console.debug(f"Could not load last session: {e}")
 
 
 # =============================================================================

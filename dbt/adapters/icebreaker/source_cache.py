@@ -16,7 +16,7 @@ import os
 import json
 import time
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -88,6 +88,7 @@ class SourceCache:
         self.snowflake_conn = snowflake_conn
         self.duckdb_conn = duckdb_conn
         self._manifest: Dict[str, CacheEntry] = {}
+        self._variant_cache: Dict[str, List[str]] = {}  # Cache VARIANT column detection per table
         
         # Ensure cache directory exists
         Path(self.config.cache_dir).mkdir(parents=True, exist_ok=True)
@@ -185,7 +186,10 @@ class SourceCache:
             console.info(f"Using cached: {table_id}")
             return self._manifest[table_id]
         
-        console.step(f"Downloading: {table_id}")
+        # Register with download tracker
+        tracker = console.download_tracker
+        tracker.start(table_id)
+        
         start_time = time.time()
         
         parquet_path = self.get_parquet_path(table_id)
@@ -210,7 +214,10 @@ class SourceCache:
         self._manifest[table_id] = entry
         self._save_manifest()
         
-        console.success(f"Cached {table_id}: {row_count:,} rows, {entry.size_gb:.2f}GB in {elapsed:.1f}s")
+        # Show completion with progress bar
+        done, total = tracker.finish(table_id)
+        bar = console.progress_bar(done, total)
+        console.success(f"Cached {table_id}: {row_count:,} rows, {entry.size_gb:.2f}GB in {elapsed:.1f}s  {bar}")
         
         return entry
     
@@ -225,11 +232,21 @@ class SourceCache:
         Detect VARIANT, OBJECT, and ARRAY columns in a Snowflake table.
         
         These types are not supported by DuckDB and must be cast to VARCHAR
-        before caching locally.
+        before caching locally. Results are cached in-memory to avoid
+        repeated INFORMATION_SCHEMA queries.
         
         Returns:
             List of column names that have VARIANT/OBJECT/ARRAY types.
         """
+        table_key = f"{database.upper()}.{schema.upper()}.{table.upper()}"
+        
+        # Return cached result if available
+        if table_key in self._variant_cache:
+            cached = self._variant_cache[table_key]
+            if cached:
+                console.info(f"Using cached VARIANT info: {len(cached)} column(s)")
+            return cached
+        
         unsupported_types = ("VARIANT", "OBJECT", "ARRAY")
         query = (
             f"SELECT COLUMN_NAME, DATA_TYPE "
@@ -245,6 +262,7 @@ class SourceCache:
             variant_cols = [row[0] for row in rows]
             if variant_cols:
                 console.info(f"Detected {len(variant_cols)} VARIANT column(s): {', '.join(variant_cols)}")
+            self._variant_cache[table_key] = variant_cols
             return variant_cols
         except Exception as e:
             console.warn(f"Could not detect VARIANT columns: {e}")
@@ -299,12 +317,18 @@ class SourceCache:
         """
         Download table from Snowflake and save as Parquet.
         
+        Uses Arrow batched streaming for efficient memory usage — rows are
+        written to Parquet incrementally instead of loading the entire table
+        into memory.
+        
         Detects VARIANT/OBJECT/ARRAY columns and casts them to VARCHAR
         before downloading, since DuckDB cannot handle these types.
         
         Returns:
             Tuple of (row_count, size_bytes)
         """
+        import pyarrow.parquet as pq
+        
         if self.snowflake_conn is None:
             raise RuntimeError("Snowflake connection not available for caching")
         
@@ -326,16 +350,34 @@ class SourceCache:
             else:
                 query = f'SELECT * FROM {db}.{sch}.{tbl}'
             
-            cursor.execute(query)
+            table_label = f"{db}.{sch}.{tbl}"
             
-            # Fetch to pandas DataFrame
-            import pandas as pd
-            df = cursor.fetch_pandas_all()
+            with console.spinning(f"Downloading {table_label} from Snowflake..."):
+                cursor.execute(query)
+                
+                # Stream Arrow batches and write incrementally to Parquet
+                row_count = 0
+                writer = None
+                
+                try:
+                    for batch in cursor.fetch_arrow_batches():
+                        if writer is None:
+                            writer = pq.ParquetWriter(
+                                parquet_path,
+                                batch.schema,
+                                compression='snappy',
+                            )
+                        writer.write_table(batch)
+                        row_count += batch.num_rows
+                finally:
+                    if writer is not None:
+                        writer.close()
             
-            row_count = len(df)
-            
-            # Write to Parquet
-            df.to_parquet(parquet_path, engine='pyarrow', compression='snappy')
+            # Handle empty tables (no batches received)
+            if writer is None:
+                import pyarrow as pa
+                empty_table = pa.table({})
+                pq.write_table(empty_table, parquet_path)
             
             size_bytes = os.path.getsize(parquet_path)
             
@@ -435,8 +477,8 @@ class SourceCache:
             try:
                 if os.path.exists(entry.parquet_path):
                     os.remove(entry.parquet_path)
-            except Exception:
-                pass
+            except Exception as e:
+                console.debug(f"Could not remove cached file: {e}")
         
         self._manifest = {}
         self._save_manifest()
@@ -481,8 +523,8 @@ class SourceCache:
                         os.remove(entry.parquet_path)
                     del self._manifest[table_id]
                     removed += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    console.debug(f"Could not remove stale cache entry: {e}")
         
         # Then remove oldest if over max size
         total_gb = sum(e.size_bytes for e in self._manifest.values()) / (1024**3)

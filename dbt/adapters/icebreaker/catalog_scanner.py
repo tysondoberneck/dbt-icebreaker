@@ -5,7 +5,6 @@ Scans cloud warehouse catalogs to estimate data volumes and
 inform routing decisions. MVP: Snowflake and DuckDB only.
 """
 
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta

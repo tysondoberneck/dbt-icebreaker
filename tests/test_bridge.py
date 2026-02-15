@@ -7,7 +7,6 @@ from dbt.adapters.icebreaker.bridge import (
     Bridge,
     IcebergConfig,
     CloudProvider,
-    construct_iceberg_ddl,
 )
 
 

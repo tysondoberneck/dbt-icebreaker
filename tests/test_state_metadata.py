@@ -3,7 +3,6 @@ Tests for State Manager and Metadata Harvester.
 """
 
 import json
-import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 

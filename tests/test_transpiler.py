@@ -5,7 +5,6 @@ Tests for the Transpiler module.
 import pytest
 from dbt.adapters.icebreaker.transpiler import (
     Transpiler,
-    TranspilationError,
     convert_dialect,
 )
 

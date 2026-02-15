@@ -9,21 +9,21 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 import agate
 
-from dbt.adapters.base import BaseAdapter, available
+from dbt.adapters.base import available
 from dbt.adapters.base.relation import BaseRelation
 from dbt.adapters.sql import SQLAdapter
 from dbt.adapters.contracts.relation import RelationType
+from dbt.adapters.capability import Capability, CapabilityDict, CapabilitySupport, Support
 from dbt_common.exceptions import DbtRuntimeError
 
 from dbt.adapters.icebreaker.connections import (
     IcebreakerConnectionManager,
-    IcebreakerCredentials,
 )
 from dbt.adapters.icebreaker.relation import IcebreakerRelation
 from dbt.adapters.icebreaker.transpiler import Transpiler, TranspilationError
 from dbt.adapters.icebreaker.savings import log_execution
-from dbt.adapters.icebreaker.auto_router import AutoRouter, RoutingDecision, get_router
-from dbt.adapters.icebreaker.catalog_scanner import CatalogScanner, get_catalog_scanner
+from dbt.adapters.icebreaker.auto_router import AutoRouter
+from dbt.adapters.icebreaker.catalog_scanner import CatalogScanner
 from dbt.adapters.icebreaker.console import console
 
 
@@ -46,6 +46,11 @@ class IcebreakerAdapter(SQLAdapter):
     
     # Use custom relation that handles DuckDB quoting
     Relation = IcebreakerRelation
+    
+    # Declare supported capabilities — metadata freshness is delegated to Snowflake
+    _capabilities = CapabilityDict({
+        Capability.TableLastModifiedMetadata: CapabilitySupport(support=Support.Full),
+    })
     
     @classmethod
     def type(cls) -> str:
@@ -203,12 +208,12 @@ class IcebreakerAdapter(SQLAdapter):
     
     def _log_routing_decision(self, model_name: str, decision) -> None:
         """Log routing decision for user visibility."""
-        # This will appear in dbt logs
-        if decision.venue == "LOCAL":
-            pass  # Silent for local (the common case)
+        venue = getattr(decision, 'venue', 'unknown')
+        reason = getattr(decision, 'reason', 'unknown')
+        if venue.upper() == "LOCAL":
+            console.debug(f"Routing {model_name} → LOCAL ({reason})")
         else:
-            # Log why we're routing to cloud
-            pass  # Will be visible in dbt output
+            console.step(f"Routing {model_name} → CLOUD ({reason})")
     
     # =========================================================================
     # Execution
@@ -359,8 +364,8 @@ class IcebreakerAdapter(SQLAdapter):
                     rows_processed=0,
                     cloud_type=cloud_type,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                console.debug(f"Savings logging failed: {e}")
             
             # Refresh catalog if configured
             catalog_type = getattr(credentials, 'catalog_type', None)
@@ -388,8 +393,8 @@ class IcebreakerAdapter(SQLAdapter):
                     rows_processed=rows,
                     cloud_type=cloud_type,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                console.debug(f"Savings logging failed: {e}")
             
             table_result = self._result_to_agate(result)
             
@@ -440,7 +445,7 @@ class IcebreakerAdapter(SQLAdapter):
         try:
             _, result = self.connections.execute(sql, fetch=True)
             return result or []
-        except:
+        except Exception:
             return []
     
     def list_relations_without_caching(self, schema_relation: BaseRelation) -> List[BaseRelation]:
@@ -467,7 +472,7 @@ class IcebreakerAdapter(SQLAdapter):
                     )
                 )
             return relations
-        except:
+        except Exception:
             return []
     
     def create_schema(self, relation: BaseRelation) -> None:
@@ -515,7 +520,7 @@ class IcebreakerAdapter(SQLAdapter):
         try:
             _, result = self.connections.execute(sql, fetch=True)
             return [row[0] for row in (result or [])]
-        except:
+        except Exception:
             return []
     
     def check_schema_exists(self, database: str, schema: str) -> bool:

@@ -11,7 +11,7 @@ No manual tags required - routing is based on:
 
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Set
+from typing import Any, Dict, List, Literal, Optional
 from enum import Enum
 
 
@@ -19,8 +19,11 @@ VenueType = Literal["LOCAL", "CLOUD"]
 
 
 class RoutingReason(Enum):
-    """Reasons for routing decisions."""
-    # Cloud routing reasons
+    """Reasons for routing decisions.
+    
+    Canonical enum used by both AutoRouter and TrafficController.
+    """
+    # Cloud routing reasons (AutoRouter)
     EXTERNAL_SOURCE = "External data source detected"
     CLOUD_FUNCTION = "Cloud-only SQL function"
     CLOUD_DEPENDENCY = "Upstream dependency requires cloud"
@@ -30,25 +33,39 @@ class RoutingReason(Enum):
     PREVIOUS_FAILURE = "Previously failed on local execution"
     HISTORICAL_COST = "Historical query cost exceeds threshold"
     
+    # Cloud routing reasons (TrafficController gates)
+    VIEW_DEPENDENCY = "Depends on cloud-only views"
+    INTERNAL_SOURCE = "Uses internal/proprietary sources"
+    UNTRANSPILABLE = "SQL contains untranspilable syntax"
+    TOXIC_TYPES = "Contains incompatible data types"
+    CRASH_HISTORY = "Previously crashed local execution"
+    HIGH_COMPLEXITY = "Historical runtime exceeds threshold"
+    LARGE_VOLUME = "Data volume exceeds local threshold"
+    
     # Local routing reasons
     AUTO_LOCAL = "Automatic routing (free compute)"
     USER_OVERRIDE_LOCAL = "User configured icebreaker_route='local'"
     ICEBERG_LOCAL = "Iceberg catalog source (DuckDB-native)"
     HISTORICAL_CHEAP = "Historical query cost is negligible"
+    DEFAULT_LOCAL = "Passed all gates - running locally (free!)"
 
 
 @dataclass
 class RoutingDecision:
-    """Result of an automatic routing decision."""
+    """Result of a routing decision.
+    
+    Used by both AutoRouter and TrafficController.
+    """
     venue: VenueType
     reason: RoutingReason
     details: Optional[str] = None
     confidence: float = 1.0  # 0-1 confidence in decision
+    gate: Optional[int] = None  # Gate number (TrafficController only)
     
     def __str__(self) -> str:
-        label = "CLOUD" if self.venue == "CLOUD" else "LOCAL"
+        gate_str = f"Gate {self.gate}: " if self.gate else ""
         detail_str = f" ({self.details})" if self.details else ""
-        return f"{label}: {self.reason.value}{detail_str}"
+        return f"{self.venue} - {gate_str}{self.reason.value}{detail_str}"
 
 
 # =============================================================================

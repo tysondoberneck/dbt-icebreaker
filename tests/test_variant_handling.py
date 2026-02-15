@@ -5,8 +5,7 @@ Tests both the connection fallback detection and the source cache
 VARIANT column detection/casting.
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 class TestDuckDBIncompatibilityDetection:

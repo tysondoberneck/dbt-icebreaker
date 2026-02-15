@@ -2,13 +2,11 @@
 Tests for the Traffic Controller.
 """
 
-import pytest
 from dbt.adapters.icebreaker.traffic import (
     TrafficController,
     TrafficConfig,
     RoutingDecision,
     RoutingReason,
-    decide_venue,
 )
 
 

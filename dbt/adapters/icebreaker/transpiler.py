@@ -427,7 +427,7 @@ class Transpiler:
                     for blacklisted in BLACKLIST:
                         if blacklisted in func_name:
                             found.append(func_name)
-        except:
+        except Exception:
             pass  # If we can't parse, we'll catch it during transpilation
         
         return found
